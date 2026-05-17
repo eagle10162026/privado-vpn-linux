@@ -131,13 +131,31 @@ Key settings:
 
 ## Legal Basis
 
-This software was created through **interoperability reverse engineering** of the PrivadoVPN Android application, which is lawful under:
+This software was created through **lawful interoperability reverse engineering** of the PrivadoVPN Android application. **No proprietary code was copied.** Every line is independently written.
 
-- **DMCA Section 1201(f)** (United States): Permits reverse engineering for the purpose of achieving interoperability with independently created programs.
-- **EU Directive 2009/24/EC, Article 6** (European Union): Permits decompilation where necessary to achieve interoperability, provided the information is not otherwise readily available.
-- **Computer Programs Directive** (EU): Explicitly protects interface information obtained through legitimate reverse engineering.
+**Applicable law:**
 
-No proprietary source code was copied. The API endpoints, authentication flows, and protocol parameters were observed through network traffic analysis and APK decompilation (public interface observation). The implementation is entirely original code.
+| Jurisdiction | Statute | Protection |
+|---|---|---|
+| United States | 17 U.S.C. § 1201(f) | Reverse engineering for interoperability |
+| United States | *Sega v. Accolade* (9th Cir. 1992) | RE for interoperability = fair use |
+| United States | *Sony v. Connectix* (9th Cir. 2000) | Independent implementation after RE is lawful |
+| United States | *Oracle v. Google* (S.Ct. 2021) | API interfaces subject to fair use |
+| European Union | Directive 2009/24/EC, Art. 6 | Decompilation for interoperability |
+| European Union | *SAS v. WPL* (CJEU 2012) | Functional behavior not copyrightable |
+| Australia | Copyright Act 1968, s 47D | Interoperability decompilation |
+| Canada | Copyright Act, s 30.6 | Interoperability exception |
+
+**What was observed (not copied):**
+- API endpoint URLs and request/response formats (functional interface, not expression)
+- OAuth authentication flow (standard protocol, not protectable)
+- Server hostnames (returned to paying subscribers via normal API use)
+- VPN protocol parameters (IKEv2/WG/OpenVPN are open standards)
+- Application API key (embedded in cleartext in the publicly-distributed APK — not a secret)
+
+**No circumvention occurred.** This client uses the same authentication as official apps. No DRM, TPM, or access control mechanism was bypassed. The API key is a public application identifier, not a security boundary.
+
+See **[NOTICE](NOTICE)** for the complete legal analysis with case citations.
 
 ## License
 
@@ -150,10 +168,16 @@ This effectively means:
 - Corporations cannot take this code, close the source, and sell it as a proprietary product
 - Any derivative work must remain open source under AGPL-3.0
 
-See [LICENSE](LICENSE) for the full text.
+See [LICENSE](LICENSE) for the full text, and [COPYING.additional](COPYING.additional) for supplemental terms (required notice preservation, misrepresentation prohibition, commercial indemnification).
 
 ## Disclaimer
 
-THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND. This is an unofficial third-party client. PrivadoVPN may change their API at any time, which could break this client. The authors are not responsible for any consequences of using this software, including but not limited to account termination, data loss, or privacy breaches.
+THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED. This is an unofficial third-party client. The author(s) are NOT affiliated with Privado Networks AG.
 
-Not affiliated with Privado Networks AG.
+By using this software you acknowledge:
+- You have a valid PrivadoVPN subscription (free or paid)
+- You accept all risks of using unofficial third-party software
+- PrivadoVPN may change their API at any time, breaking this client
+- The author(s) bear NO liability for account termination, data exposure, network issues, or any damages
+
+If you represent Privado Networks AG and have concerns about this project, please open an issue for good-faith discussion. This project exists to provide Linux users with access to a service they are paying for, on a platform the vendor does not officially support.

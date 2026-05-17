@@ -1,0 +1,141 @@
+LEGAL NOTICE — INTEROPERABILITY REVERSE ENGINEERING
+
+Copyright (c) 2026 Joe Aguero. All rights reserved under AGPL-3.0.
+
+================================================================================
+REVERSE ENGINEERING STATEMENT
+================================================================================
+
+This software was developed through lawful interoperability reverse engineering
+of the PrivadoVPN Android application (com.privado.android). No proprietary
+source code, object code, or compiled binaries from Privado Networks AG were
+copied, incorporated, or distributed as part of this project.
+
+The following information was obtained through legitimate observation methods:
+
+  1. API ENDPOINTS — Discovered via network traffic analysis (HTTPS inspection
+     of the official app's outbound requests using user-controlled proxy on
+     user-owned device). These are functional interface specifications, not
+     copyrightable expression.
+
+  2. AUTHENTICATION FLOW — Observed via the same network traffic analysis.
+     Standard OAuth 2.0 / token-based authentication. The flow itself is not
+     protectable; only a specific creative implementation would be.
+
+  3. API KEY (9f994c466340e8f2ed60a99396fecb6a) — This key is embedded in
+     plain text within the publicly distributed Android APK file. It is
+     identical for ALL users and ALL installations. It is not a personal
+     credential, not a trade secret (publicly distributed in cleartext), and
+     not access-restricted. It functions as an application identifier, not a
+     security boundary. Extractable by anyone via: `apktool d privado.apk &&
+     grep -r "api_key" res/ smali/`.
+
+  4. SERVER HOSTNAMES — Returned by the public API in response to authenticated
+     requests from a paying subscriber. Using one's own subscription credentials
+     to query available servers is normal authorized use.
+
+  5. PROTOCOL PARAMETERS — IKEv2/IPsec, WireGuard, and OpenVPN are open
+     standards. The specific parameters (cipher suites, key exchange methods,
+     DH groups) were observed from connection configuration responses. These
+     are functional specifications, not copyrightable expression.
+
+================================================================================
+LEGAL BASIS
+================================================================================
+
+United States:
+  - 17 U.S.C. § 1201(f) — Reverse Engineering Exception
+    "a person who has lawfully obtained the right to use a copy of a computer
+    program may circumvent a technological measure that effectively controls
+    access to a particular portion of that program for the sole purpose of
+    identifying and analyzing those elements of the program that are necessary
+    to achieve interoperability of an independently created computer program
+    with other programs"
+
+  - Sega v. Accolade, 977 F.2d 1510 (9th Cir. 1992)
+    Established that reverse engineering for interoperability is fair use.
+
+  - Sony v. Connectix, 203 F.3d 596 (9th Cir. 2000)
+    Confirmed that intermediate copying during reverse engineering is
+    permissible when the final product is independently created.
+
+  - Oracle v. Google, 593 U.S. ___ (2021)
+    APIs and functional interfaces are subject to fair use defense.
+
+European Union:
+  - Directive 2009/24/EC, Article 6 (Software Directive)
+    Permits decompilation "to obtain the information necessary to achieve the
+    interoperability of an independently created computer program with other
+    programs" where that information "has not previously been readily available."
+
+  - Directive 2001/29/EC, Article 6(4) (InfoSoc Directive)
+    Member states shall ensure that rightholders make available to beneficiaries
+    of exceptions the means of benefiting from those exceptions.
+
+  - SAS Institute v. World Programming Ltd [2012] EUECJ C-406/10
+    Functional behavior of a program is not protectable by copyright.
+
+Australia:
+  - Copyright Act 1968, s 47D — Decompilation for interoperability
+
+Canada:
+  - Copyright Act, s 30.6 — Interoperability exception
+
+================================================================================
+NO CIRCUMVENTION
+================================================================================
+
+This software does NOT circumvent any technological protection measure (TPM),
+digital rights management (DRM), or access control mechanism. The VPN service
+requires valid subscriber credentials (username + password) to function. This
+client uses the SAME authentication as the official apps. No DRM is bypassed.
+No access control is circumvented. No encryption is broken.
+
+The API key is an APPLICATION IDENTIFIER, not an access control mechanism. It
+is distributed publicly in cleartext within the APK. Using it does not
+constitute circumvention under 17 U.S.C. § 1201(a).
+
+================================================================================
+INDEPENDENT IMPLEMENTATION
+================================================================================
+
+Every line of code in this repository was written independently. No
+decompiled Java/Kotlin/Smali code from the APK was copied into this project.
+The APK was analyzed to understand WHAT the app does (functional behavior)
+and WITH WHOM it communicates (API interface), not to copy HOW it does it
+(creative expression).
+
+This distinction — idea vs. expression — is fundamental to copyright law
+(Baker v. Selden, 101 U.S. 99 (1879); Lotus v. Borland, 49 F.3d 807
+(1st Cir. 1995)).
+
+================================================================================
+DISCLAIMER OF LIABILITY
+================================================================================
+
+THE AUTHOR PROVIDES THIS SOFTWARE "AS IS" AND DISCLAIMS ALL WARRANTIES.
+USE OF THIS SOFTWARE IS ENTIRELY AT YOUR OWN RISK. THE AUTHOR IS NOT
+RESPONSIBLE FOR:
+
+  - Account suspension or termination by PrivadoVPN
+  - Data exposure, leaks, or privacy breaches
+  - Network disruption or connectivity issues
+  - Legal action taken by third parties
+  - Any financial loss or damage of any kind
+
+By using this software, you acknowledge that:
+  1. You have a valid PrivadoVPN subscription
+  2. You accept all risks associated with using unofficial software
+  3. You will comply with all applicable laws in your jurisdiction
+  4. You will not use this software for any unlawful purpose
+
+================================================================================
+CONTACT
+================================================================================
+
+If any party believes this software infringes their rights, please open an
+issue on the GitHub repository with specific identification of the allegedly
+infringing material. The author will respond promptly and in good faith to
+all legitimate concerns.
+
+This project operates under the principle of good faith interoperability.

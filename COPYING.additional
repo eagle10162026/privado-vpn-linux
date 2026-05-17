@@ -1,0 +1,83 @@
+ADDITIONAL TERMS pursuant to Section 7 of the GNU Affero General Public
+License v3.0 (AGPL-3.0)
+
+The following additional terms apply to this software and all derivative works,
+as permitted by Section 7 of the AGPL-3.0:
+
+================================================================================
+1. PRESERVATION OF LEGAL NOTICES (Section 7(b))
+================================================================================
+
+All copies, modified versions, and derivative works of this software MUST
+preserve the following files intact and unmodified:
+
+  - NOTICE (legal analysis and reverse engineering declaration)
+  - This file (COPYING.additional)
+
+These files contain material legal notices required for the defense of this
+project's lawful existence. Removing, altering, or obscuring these notices in
+any distributed copy or derivative work is a violation of the license terms and
+voids the license grant to the offending party.
+
+Any user interface or documentation that displays copyright notices must also
+display: "Lawful interoperability implementation — see NOTICE file."
+
+================================================================================
+2. PROHIBITION OF MISREPRESENTATION (Section 7(c))
+================================================================================
+
+You may NOT misrepresent the origin of this software. Specifically:
+
+  a) You may not claim that this software is an official product of Privado
+     Networks AG or any affiliated entity.
+
+  b) You may not remove or alter the "unofficial" designation in any user-
+     facing material (README, about screen, app store listing, website).
+
+  c) Modified versions must be clearly marked as modified and must not be
+     distributed under the name "PrivadoVPN" without the qualifier
+     "unofficial" or "community" or similar clear differentiation.
+
+================================================================================
+3. INDEMNIFICATION REQUIREMENT (Section 7, general additional terms)
+================================================================================
+
+Any party that distributes this software or a derivative work, whether
+modified or unmodified, in a commercial context (bundled with hardware,
+included in a paid service, offered as part of a commercial product) agrees
+to indemnify and hold harmless the original author(s) from any legal claims,
+damages, or expenses arising from that distribution.
+
+This means: if you package this and sell it and get sued, that's YOUR problem,
+not the original author's.
+
+================================================================================
+4. NETWORK USE IS DISTRIBUTION (AGPL Section 13, clarification)
+================================================================================
+
+For the avoidance of doubt: offering this software (or any modified version)
+as a service over a network — including but not limited to a "VPN management
+service", "VPN-as-a-Service", API gateway, or hosted control panel — constitutes
+"Remote Network Interaction" under AGPL Section 13 and triggers the requirement
+to provide complete corresponding source code to all users of that service.
+
+================================================================================
+5. PATENT NON-ASSERTION
+================================================================================
+
+The author(s) of this software do not hold and do not claim any patents
+covering the functionality implemented herein. All protocols used (IKEv2,
+WireGuard, OpenVPN, OAuth 2.0) are open standards.
+
+================================================================================
+6. SEVERABILITY
+================================================================================
+
+If any provision of these additional terms is held to be unenforceable, the
+remaining provisions continue in full force and effect.
+
+================================================================================
+
+These additional terms are authorized by Section 7 of the AGPL-3.0 and form
+part of the license for this software. The base license remains the AGPL-3.0
+as stated in the LICENSE file.
