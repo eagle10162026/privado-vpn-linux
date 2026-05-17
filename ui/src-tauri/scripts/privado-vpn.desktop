@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=PrivadoVPN
+GenericName=VPN Client
+Comment=Fast, Secure & Free VPN for Linux
+Exec=privado-vpn %u
+Icon=privado-vpn
+Terminal=false
+Categories=Network;Security;Utility;
+Keywords=VPN;Privacy;Security;Tunnel;Encrypt;
+StartupNotify=true
+StartupWMClass=PrivadoVPN
+MimeType=x-scheme-handler/privadovpn;

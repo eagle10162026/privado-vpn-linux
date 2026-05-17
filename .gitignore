@@ -1,0 +1,45 @@
+# Build artifacts
+/target/
+/ui/src-tauri/target/
+/mcp/privado-vpn-mcp/target/
+/mcp/privado-vpn-rag-mcp/target/
+
+# Frontend
+/ui/node_modules/
+/ui/build/
+/ui/.svelte-kit/
+
+# User config (contains credentials and tokens — NEVER commit these)
+credentials.json
+token.json
+config.json
+analytics_events.json
+errors.json
+history.json
+control_tower.json
+
+# Secrets and keys
+*.key
+*.pem
+*.secret
+creds.env
+
+# OS / editor
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Internal development docs (not for public release)
+CLAUDE.md
+HANDOFF.md
+PLAN.md
+
+# Env files
+.env
+.env.*
+
+# Data / state
+data/
