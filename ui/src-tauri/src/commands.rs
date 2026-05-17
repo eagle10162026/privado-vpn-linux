@@ -345,6 +345,7 @@ pub async fn vpn_run_diagnostics(state: State<'_, AppState>) -> Result<serde_jso
     let dns_ok = tokio::net::lookup_host("google.com:443").await.is_ok();
     results.insert("dns_working".into(), serde_json::json!(dns_ok));
 
+    // Connectivity probe — test if VPN infrastructure is reachable (like pinging google.com for DNS).
     let vpn_server = "ams-101.vpn.privado.io";
     let ping_start = Instant::now();
     let vpn_reachable = tokio::time::timeout(

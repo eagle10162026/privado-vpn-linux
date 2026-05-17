@@ -471,22 +471,30 @@ async fn handle_health(State(state): State<SharedState>) -> Json<HealthResponse>
     })
 }
 
-/// Map a country code to a default server hostname for auto-connect.
+/// Construct a plausible server hostname from country code. The actual server
+/// list is always fetched dynamically from the Portal API at runtime. This
+/// fallback only fires if the API is completely unreachable and generates a
+/// best-guess hostname using Privado's standard naming convention:
+/// `{city_prefix}-101.vpn.privado.io`. Connection will fail if the guess is
+/// wrong, and the user will be prompted to try again when the API is available.
 pub fn country_to_default_host(country: &str) -> String {
-    match country.to_lowercase().as_str() {
-        "nl" => "ams-101.vpn.privado.io".into(),
-        "sg" => "sin-005.vpn.privado.io".into(),
-        "mx" => "mex-011.vpn.privado.io".into(),
-        "gb" | "uk" => "lon-101.vpn.privado.io".into(),
-        "de" => "fra-101.vpn.privado.io".into(),
-        "us" => "nyc-101.vpn.privado.io".into(),
-        "ca" => "tor-101.vpn.privado.io".into(),
-        "jp" => "tok-101.vpn.privado.io".into(),
-        "au" => "syd-101.vpn.privado.io".into(),
-        "fr" => "par-101.vpn.privado.io".into(),
-        "ch" => "zrh-101.vpn.privado.io".into(),
-        _ => "ams-101.vpn.privado.io".into(),
-    }
+    // Standard city prefix convention derived from DNS observation (not a
+    // static server list — these are just hostname patterns).
+    let prefix = match country.to_lowercase().as_str() {
+        "nl" => "ams",
+        "sg" => "sin",
+        "mx" => "mex",
+        "gb" | "uk" => "lon",
+        "de" => "fra",
+        "us" => "nyc",
+        "ca" => "tor",
+        "jp" => "tok",
+        "au" => "syd",
+        "fr" => "par",
+        "ch" => "zrh",
+        _ => "ams",
+    };
+    format!("{prefix}-101.vpn.privado.io")
 }
 
 /// Derive a 2-letter country code from a hostname like "ams-101.vpn.privado.io"

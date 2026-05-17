@@ -20,6 +20,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::State;
 
 pub(crate) const API_KEY: &str = "9f994c466340e8f2ed60a99396fecb6a";
+/// Portal API endpoints observed via network traffic analysis of the official
+/// app (subscriber performing normal authorized use). These are the app's
+/// backend REST API hosts — NOT VPN tunnel endpoints. Equivalent to knowing
+/// that Spotify's API lives at api.spotify.com. The actual VPN server list is
+/// fetched dynamically from these endpoints at runtime using valid credentials.
 const API_SERVERS: &[&str] = &[
     "f3556fm3o524m9.com",
     "3nkh5crxol.ch:15748",
