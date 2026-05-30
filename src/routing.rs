@@ -7,7 +7,7 @@
 //!
 //! 2. **Policy routing** — `ip rule` / fwmark to force VPN traffic
 //!    through the WiFi interface while leaving LAN traffic untouched.
-//!    Uses fwmark 0x1234 and routing table 1234.
+//!    Uses fwmark 0x1016 and routing table 1016.
 //!
 //! 3. **DNS override** — writes a resolv.conf drop-in for the VPN's
 //!    DNS servers when connected, restores the original on disconnect.
@@ -19,10 +19,10 @@ use tracing::{info, warn};
 const IPTABLES_CHAIN: &str = "PRIVADO_KILLSWITCH";
 
 /// fwmark value for VPN-bound packets. Chosen to avoid collisions with common fwmarks.
-const VPN_FWMARK: u32 = 0x1234;
+const VPN_FWMARK: u32 = 0x1016;
 
 /// Routing table number for VPN policy routes.
-const VPN_TABLE: u32 = 1234;
+const VPN_TABLE: u32 = 1016;
 
 // ─── DNS resolution helpers ────────────────────────────────────────────────
 
@@ -169,8 +169,8 @@ fn get_gateway_for_iface(iface: &str) -> Option<String> {
 /// while leaving LAN traffic untouched.
 ///
 /// Mechanism:
-///   1. Mark outbound packets destined for VPN endpoints with fwmark 0x1234
-///   2. Add `ip rule` sending marked packets to table 1234
+///   1. Mark outbound packets destined for VPN endpoints with fwmark 0x1016
+///   2. Add `ip rule` sending marked packets to table 1016
 ///   3. Table 1016 has a default route via the WiFi gateway
 ///
 /// This ensures the VPN tunnel always goes out over WiFi even if there's
@@ -210,7 +210,7 @@ pub fn install_policy_routing(vpn_remote_ips: &[String]) -> Result<(), String> {
         ])?;
     }
 
-    // ip rule: fwmark → table 1234.
+    // ip rule: fwmark → table 1016.
     run_cmd("ip", &[
         "rule", "add", "fwmark", &format!("0x{VPN_FWMARK:x}"),
         "table", &VPN_TABLE.to_string(),
@@ -342,11 +342,11 @@ pub fn on_connect(
 // or write the PID to /sys/fs/cgroup/net_cls/privado_vpn/cgroup.procs
 
 const VPN_CGROUP_PATH: &str = "/sys/fs/cgroup/net_cls/privado_vpn";
-const VPN_CGROUP_CLASSID: u32 = 0x00123400;
+const VPN_CGROUP_CLASSID: u32 = 0x00101600;
 
 /// Create the net_cls cgroup and iptables rule that marks traffic from
-/// processes in that cgroup with fwmark 0x1234. Only this marked traffic
-/// hits the strongSwan XFRM encrypt policy (mark_out = 0x1234).
+/// processes in that cgroup with fwmark 0x1016. Only this marked traffic
+/// hits the strongSwan XFRM encrypt policy (mark_out = 0x1016).
 pub fn install_vpn_cgroup() -> Result<(), String> {
     // Create the cgroup directory.
     let _ = std::fs::create_dir_all(VPN_CGROUP_PATH);
@@ -356,7 +356,7 @@ pub fn install_vpn_cgroup() -> Result<(), String> {
     std::fs::write(&classid_path, format!("{VPN_CGROUP_CLASSID}\n"))
         .map_err(|e| format!("write cgroup classid: {e}"))?;
 
-    // iptables: mark packets from the VPN cgroup with fwmark 0x1234.
+    // iptables: mark packets from the VPN cgroup with fwmark 0x1016.
     // This mark is what strongSwan's XFRM policy matches against.
     let _ = run_cmd("iptables", &[
         "-t", "mangle", "-D", "OUTPUT",

@@ -430,6 +430,9 @@ struct SetConfigReq {
 
 async fn handle_set_config(Json(body): Json<SetConfigReq>) -> (StatusCode, Json<serde_json::Value>) {
     let mut cfg = crate::config::load_config().unwrap_or_default();
+    // Capture a kill-switch toggle (Copy) before applying so we can act on it
+    // after the save regardless of order.
+    let kill_switch_change = body.kill_switch;
     if let Some(v) = body.preferred_country { cfg.preferred_country = Some(v); }
     if let Some(v) = body.preferred_city { cfg.preferred_city = Some(v); }
     if let Some(v) = body.kill_switch { cfg.kill_switch = v; }
@@ -442,7 +445,24 @@ async fn handle_set_config(Json(body): Json<SetConfigReq>) -> (StatusCode, Json<
     if let Some(v) = body.route_llm_browser { cfg.route_llm_browser = v; }
     if let Some(v) = body.route_llm_tools { cfg.route_llm_tools = v; }
     match crate::config::save_config(&cfg) {
-        Ok(_) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))),
+        Ok(_) => {
+            // #2: apply a kill-switch toggle to routing LIVE when the VPN is
+            // currently connected, so flipping it in Settings (GUI or CLI/LLM)
+            // takes effect immediately instead of only on the next connect.
+            if let Some(ks) = kill_switch_change {
+                if crate::daemon::swanctl::live_status().await.connected {
+                    let domains = cfg.split_domains.clone();
+                    tokio::task::spawn_blocking(move || {
+                        if ks {
+                            let _ = crate::routing::install_killswitch(&domains);
+                        } else {
+                            let _ = crate::routing::remove_killswitch();
+                        }
+                    });
+                }
+            }
+            (StatusCode::OK, Json(serde_json::json!({"ok": true})))
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e}))),
     }
 }
@@ -471,30 +491,22 @@ async fn handle_health(State(state): State<SharedState>) -> Json<HealthResponse>
     })
 }
 
-/// Construct a plausible server hostname from country code. The actual server
-/// list is always fetched dynamically from the Portal API at runtime. This
-/// fallback only fires if the API is completely unreachable and generates a
-/// best-guess hostname using Privado's standard naming convention:
-/// `{city_prefix}-101.vpn.privado.io`. Connection will fail if the guess is
-/// wrong, and the user will be prompted to try again when the API is available.
+/// Map a country code to a default server hostname for auto-connect.
 pub fn country_to_default_host(country: &str) -> String {
-    // Standard city prefix convention derived from DNS observation (not a
-    // static server list — these are just hostname patterns).
-    let prefix = match country.to_lowercase().as_str() {
-        "nl" => "ams",
-        "sg" => "sin",
-        "mx" => "mex",
-        "gb" | "uk" => "lon",
-        "de" => "fra",
-        "us" => "nyc",
-        "ca" => "tor",
-        "jp" => "tok",
-        "au" => "syd",
-        "fr" => "par",
-        "ch" => "zrh",
-        _ => "ams",
-    };
-    format!("{prefix}-101.vpn.privado.io")
+    match country.to_lowercase().as_str() {
+        "nl" => "ams-101.vpn.privado.io".into(),
+        "sg" => "sin-005.vpn.privado.io".into(),
+        "mx" => "mex-011.vpn.privado.io".into(),
+        "gb" | "uk" => "lon-101.vpn.privado.io".into(),
+        "de" => "fra-101.vpn.privado.io".into(),
+        "us" => "nyc-101.vpn.privado.io".into(),
+        "ca" => "tor-101.vpn.privado.io".into(),
+        "jp" => "tok-101.vpn.privado.io".into(),
+        "au" => "syd-101.vpn.privado.io".into(),
+        "fr" => "par-101.vpn.privado.io".into(),
+        "ch" => "zrh-101.vpn.privado.io".into(),
+        _ => "ams-101.vpn.privado.io".into(),
+    }
 }
 
 /// Derive a 2-letter country code from a hostname like "ams-101.vpn.privado.io"

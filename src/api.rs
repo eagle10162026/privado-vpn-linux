@@ -152,7 +152,13 @@ impl PrivadoApi {
         let body = resp.text().await
             .map_err(|e| format!("login response read failed: {e}"))?;
         let data: LoginResponse = serde_json::from_str(&body)
-            .map_err(|e| format!("login response parse failed: {e} — body: {}", &body[..body.len().min(200)]))?;
+            .map_err(|e| {
+                // Char-boundary-safe truncation: `&body[..200]` panics if a
+                // multi-byte UTF-8 char straddles byte 200 (Privado error
+                // bodies can contain non-ASCII), which would crash login.
+                let preview: String = body.chars().take(200).collect();
+                format!("login response parse failed: {e} — body: {preview}")
+            })?;
 
         if let Some(ref err) = data.error {
             return Err(format!("login failed ({}): {err}", status));

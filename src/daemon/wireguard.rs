@@ -264,14 +264,14 @@ pub async fn connect(config: &WgConfig) -> Result<(), String> {
     // Add routing table and fwmark so per-process split tunnel works with WG.
     // wg-quick uses Table, FwMark, and PostUp/PreDown to integrate with iptables.
     // This ensures UID-based bypass rules (from vpn_add_split_process) take effect.
-    conf.push_str("Table = 1234\n");
-    conf.push_str("FwMark = 0x1234\n");
+    conf.push_str("Table = 1016\n");
+    conf.push_str("FwMark = 0x1016\n");
 
     // PostUp: add ip rule to route marked traffic through WG, and allow
     // unmarked traffic (UID-bypassed processes) to skip the tunnel.
-    conf.push_str("PostUp = ip rule add not fwmark 0x1234 table 1234 priority 100\n");
+    conf.push_str("PostUp = ip rule add not fwmark 0x1016 table 1016 priority 100\n");
     conf.push_str("PostUp = ip rule add table main suppress_prefixlength 0 priority 50\n");
-    conf.push_str("PreDown = ip rule del not fwmark 0x1234 table 1234 priority 100\n");
+    conf.push_str("PreDown = ip rule del not fwmark 0x1016 table 1016 priority 100\n");
     conf.push_str("PreDown = ip rule del table main suppress_prefixlength 0 priority 50\n");
 
     conf.push_str("\n[Peer]\n");

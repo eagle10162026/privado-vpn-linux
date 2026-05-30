@@ -77,6 +77,12 @@
 
   // Connection health polling
   let pollInterval: ReturnType<typeof setInterval> | null = null;
+  // Steady CLI<->GUI sync. The daemon (127.10.0.18:1600 / config.json) is the
+  // single source of truth that the GUI, the CLI, and the LLM integration all
+  // read/write. This interval re-pulls daemon state so a setting/login changed
+  // by the LLM or CLI is reflected in the GUI live (and GUI saves already push
+  // back through the same daemon, so the CLI/LLM see those too).
+  let syncInterval: ReturnType<typeof setInterval> | null = null;
 
   function goTo(t: Tab) { sub = null; tab = t; }
 
@@ -282,6 +288,52 @@
     notifConfig = config as Record<string, unknown>;
   }
 
+  // Pull authoritative state from the daemon (login + connection + config) so
+  // changes made by the LLM/CLI — which write through the SAME daemon — show up
+  // in the GUI without a reload. Config toggles are NOT overwritten while the
+  // user is on the Settings tab, so an in-progress edit is never clobbered.
+  async function syncFromDaemon() {
+    try {
+      const status = await vpnStatus();
+      // Login/account state — reflects a login/logout done via CLI/LLM (#1).
+      loggedIn = status.logged_in;
+      username = status.username;
+      // Reflect connection state, but don't fight an in-flight transition.
+      if (status.state === 'Connected') {
+        if (vpnState === 'disconnected' || vpnState === 'connected') {
+          vpnState = 'connected';
+          connectedServer = status.server ?? connectedServer;
+          connectedIP = status.ip ?? connectedIP;
+          killSwitchActive = status.kill_switch_active;
+          if (!pollInterval) startPolling();
+        }
+      } else if (status.state === 'Disconnected' && vpnState === 'connected') {
+        vpnState = 'disconnected';
+        connectedServer = '';
+        connectedIP = '';
+        killSwitchActive = false;
+        stopPolling();
+      }
+    } catch { /* not in Tauri / daemon unreachable */ }
+
+    // Don't overwrite settings the user is actively editing.
+    if (tab === 'settings') return;
+    try {
+      const cfg = await vpnGetConfig();
+      if (cfg) {
+        killSwitch = cfg.kill_switch;
+        splitTunnel = cfg.split_tunnel;
+        autoConnect = cfg.auto_connect;
+        autoReconnect = cfg.auto_reconnect;
+        splitDomains = cfg.split_domains ?? [];
+        dnsServers = cfg.dns_servers ?? ['198.18.0.1', '198.18.0.2'];
+        favorites = cfg.favorites ?? [];
+        if (cfg.preferred_country) selectedCountry = cfg.preferred_country;
+        if (cfg.username) { loggedIn = true; username = cfg.username; }
+      }
+    } catch { /* config load failed */ }
+  }
+
   // === INIT ===
   onMount(async () => {
     try {
@@ -326,7 +378,12 @@
 
     if (!loggedIn) tab = 'account';
 
-    return () => { stopPolling(); };
+    // Steady CLI<->GUI sync (4s): keeps the GUI reflecting LLM/CLI-driven login
+    // + setting changes. GUI saves push back through the same daemon, so the
+    // CLI/LLM see GUI changes too — fully bidirectional.
+    syncInterval = setInterval(syncFromDaemon, 4000);
+
+    return () => { stopPolling(); if (syncInterval) { clearInterval(syncInterval); syncInterval = null; } };
   });
 </script>
 

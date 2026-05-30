@@ -163,8 +163,8 @@ pub async fn write_dynamic_config(
     // strongSwan 6.x removed the connection-level `dns` option.
     // DNS is handled via resolv.conf override in routing::install_dns_override().
 
-    // mark_out = 0x1234 means the XFRM encrypt policy ONLY matches packets
-    // that already carry fwmark 0x1234. Everything else passes direct to the
+    // mark_out = 0x1016 means the XFRM encrypt policy ONLY matches packets
+    // that already carry fwmark 0x1016. Everything else passes direct to the
     // internet without touching the VPN. This is "opt-in" tunnel mode:
     // only apps explicitly marked (Stygian, etc.) go through the VPN.
     // Chrome, IDE, LM Studio, BOBAI services all stay on direct internet.
@@ -190,14 +190,14 @@ pub async fn write_dynamic_config(
       {CONN_NAME}-child {{
         local_ts = 0.0.0.0/0
         remote_ts = {ts}
-        mark_out = 0x1234
-        mark_in = 0x1234
+        mark_out = 0x1016
+        mark_in = 0x1016
         esp_proposals = aes256-sha256,aes256-sha384,default
         start_action = none
         dpd_action = restart
         close_action = none
         rekey_time = 0
-        set_mark_out = 0x1234
+        set_mark_out = 0x1016
       }}
     }}
   }}
@@ -293,6 +293,21 @@ pub async fn terminate_all_privado() {
 pub async fn cleanup_config() {
     let _ = tokio::fs::remove_file(IPSEC_CONF).await;
     let _ = tokio::fs::remove_file(IPSEC_SECRETS).await;
+    let _ = Command::new("swanctl").arg("--load-all").output().await;
+}
+
+/// Remove stale legacy per-country conf files (privado-{nl,sg,mx}.conf) left
+/// over from the old per-country approach. Those files set
+/// `remote_ts = 0.0.0.0/0` WITHOUT `mark_out`, so `swanctl --load-all` would
+/// load a CATCH-ALL connection that — if ever initiated — captures ALL traffic
+/// (LAN, the paired S22 phone, forwarded packets) into the tunnel and wrecks
+/// the host network stack. The dynamic `privado.conf` (mark_out=0x1016
+/// split-tunnel) is the ONLY valid config. Called at daemon startup so a stale
+/// file can never silently re-arm the network-kill bug.
+pub async fn purge_stale_confs() {
+    for cc in ["nl", "sg", "mx"] {
+        let _ = tokio::fs::remove_file(format!("/etc/swanctl/conf.d/privado-{cc}.conf")).await;
+    }
     let _ = Command::new("swanctl").arg("--load-all").output().await;
 }
 

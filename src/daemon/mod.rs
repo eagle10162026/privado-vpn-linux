@@ -35,6 +35,13 @@ pub async fn run() -> Result<(), String> {
     // a 30-second window of "looks connected but isn't authorized."
     swanctl::terminate_all_privado().await;
 
+    // Remove stale legacy per-country confs (catch-all remote_ts=0.0.0.0/0 with
+    // NO mark_out). If `swanctl --load-all` ever loaded one and it got
+    // initiated, it would capture ALL traffic (LAN + paired S22 + forwarded)
+    // into the tunnel and kill the host network stack. Only the dynamic
+    // privado.conf (mark_out=0x1016 split-tunnel) is valid.
+    swanctl::purge_stale_confs().await;
+
     // Spawn the guardian.
     let g = shared.clone();
     tokio::spawn(async move { guardian::run_loop(g).await; });
