@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import ConnectScreen from '$lib/components/ConnectScreen.svelte';
   import ServerList from '$lib/components/ServerList.svelte';
   import ControlTower from '$lib/components/ControlTower.svelte';
@@ -57,11 +57,13 @@
 
   // Speed test state
   let speedTesting = $state(false);
-  let speedResult = $state<SpeedTestResult | null>(null);
-  let speedHistory = $state<SpeedTestResult[]>([]);
+  // SpeedTest component row shape (numeric ts; download/upload Mbps; ping ms).
+  type SpeedRow = { timestamp: number; download: number; upload: number; ping: number; server: string };
+  let speedResult = $state<SpeedRow | null>(null);
+  let speedHistory = $state<SpeedRow[]>([]);
 
   // History state
-  let connectionHistory = $state<{id:string;server:string;country:string;countryCode:string;connectedAt:string;duration:number;dataSent:number;dataReceived:number}[]>([]);
+  let connectionHistory = $state<{id:string;server:string;country:string;country_code:string;duration:number;dataTransferred:number;timestamp:number;flag:string}[]>([]);
   let historyLoading = $state(false);
   let historySortBy = $state<'date'|'duration'|'data'>('date');
 
@@ -235,10 +237,27 @@
   }
 
   // === SPEED TEST ===
+  // Country-code → flag emoji (regional-indicator pair). '' for unknown codes.
+  function flagEmoji(cc: string): string {
+    if (!cc || cc.length !== 2) return '';
+    const cp = [...cc.toUpperCase()].map((ch) => 0x1f1e6 - 65 + ch.charCodeAt(0));
+    return String.fromCodePoint(...cp);
+  }
+  // Map daemon SpeedTestResult (…_mbps + string ts) → the SpeedTest row shape.
+  function toSpeedRow(r: SpeedTestResult): SpeedRow {
+    return {
+      timestamp: Date.parse(r.timestamp) || Date.now(),
+      download: r.download_mbps,
+      upload: r.upload_mbps,
+      ping: r.ping_ms,
+      server: r.server,
+    };
+  }
+
   async function handleSpeedTest() {
     speedTesting = true;
     const r = await vpnRunSpeedTest();
-    if (r) { speedResult = r; speedHistory = [...speedHistory, r]; }
+    if (r) { const row = toSpeedRow(r); speedResult = row; speedHistory = [...speedHistory, row]; }
     speedTesting = false;
   }
 
@@ -250,11 +269,11 @@
       id: String(i),
       server: c.server,
       country: c.country,
-      countryCode: c.country_code,
-      connectedAt: c.connected_at,
+      country_code: c.country_code,
       duration: c.duration_secs,
-      dataSent: c.bytes_sent,
-      dataReceived: c.bytes_recv,
+      dataTransferred: c.bytes_sent + c.bytes_recv,
+      timestamp: Date.parse(c.connected_at) || 0,
+      flag: flagEmoji(c.country_code),
     }));
     historyLoading = false;
   }
@@ -269,7 +288,7 @@
     const c = config as Record<string, unknown>;
     ctConfig = c;
     ctActive = Boolean(c.enabled ?? c.adBlocking ?? c.trackerBlocking);
-    await vpnSaveControlTower(c as ControlTowerConfig);
+    await vpnSaveControlTower(c as unknown as ControlTowerConfig);
   }
 
   // === PHANTOM MODE ===
@@ -373,7 +392,7 @@
         const ct = await vpnGetControlTower();
         if (ct) { ctConfig = ct as unknown as Record<string, unknown>; ctActive = ct.enabled; }
       } catch {}
-      try { speedHistory = await vpnGetSpeedResults(); } catch {}
+      try { speedHistory = (await vpnGetSpeedResults()).map(toSpeedRow); } catch {}
     }
 
     if (!loggedIn) tab = 'account';
@@ -382,8 +401,13 @@
     // + setting changes. GUI saves push back through the same daemon, so the
     // CLI/LLM see GUI changes too — fully bidirectional.
     syncInterval = setInterval(syncFromDaemon, 4000);
+  });
 
-    return () => { stopPolling(); if (syncInterval) { clearInterval(syncInterval); syncInterval = null; } };
+  // Teardown via onDestroy — an async onMount() cannot return a cleanup fn
+  // (Svelte's types reject Promise<cleanup>), so register it here instead.
+  onDestroy(() => {
+    stopPolling();
+    if (syncInterval) { clearInterval(syncInterval); syncInterval = null; }
   });
 </script>
 

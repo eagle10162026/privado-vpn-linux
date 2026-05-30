@@ -5,10 +5,10 @@ const invoke = (() => {
   if (typeof window === 'undefined') {
     return async (_cmd: string, _args?: unknown) => null;
   }
-  const ti = (window as Record<string, unknown>).__TAURI_INTERNALS__ as
+  const ti = (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ as
     { invoke?: (cmd: string, args?: unknown) => Promise<unknown> } | undefined;
   if (ti?.invoke) return ti.invoke;
-  const tg = (window as Record<string, unknown>).__TAURI__ as
+  const tg = (window as unknown as Record<string, unknown>).__TAURI__ as
     { core?: { invoke?: (cmd: string, args?: unknown) => Promise<unknown> } } | undefined;
   if (tg?.core?.invoke) return tg.core.invoke;
   return async (cmd: string, _args?: unknown) => {
@@ -199,6 +199,24 @@ export interface DiagnosticResult {
   vpn_server_reachable: boolean; vpn_server_ping_ms: number;
   killswitch_state: string; dns_override_active: boolean;
   resolv_conf: string; journal_last_50: string; strongswan_sas: string;
+}
+
+// Shape returned by the `vpn_run_diagnostics` helper that DiagnosticsScreen renders.
+export interface DiagnosticsInfo {
+  helper_installed: boolean;
+  helper_setuid: boolean;
+  helper_path: string;
+  strongswan_running: boolean;
+  protocol: string;
+  tunnel_status: Record<string, string>;
+  config_dir: string;
+  logged_in: boolean;
+  kill_switch: boolean;
+  auto_reconnect: boolean;
+  auto_connect: boolean;
+  split_tunnel_enabled: boolean;
+  split_domains_count: number;
+  dns_servers: string[];
 }
 
 export interface BreachResult {

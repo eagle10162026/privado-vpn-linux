@@ -8,7 +8,7 @@
     ip: string;
     status: string;
     load: number;
-    flag: string;
+    flag?: string; // optional — the list computes the emoji via getFlag(country_code)
   }
 
   interface Props {
