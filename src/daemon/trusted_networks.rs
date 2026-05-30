@@ -226,6 +226,9 @@ async fn detect_wifi_interface() -> Option<String> {
 }
 
 /// List available WiFi networks (for UI display in trusted networks settings).
+/// Exposed for the settings UI's network picker; not yet called from the
+/// daemon's own paths, so allow it until the picker endpoint is wired.
+#[allow(dead_code)]
 pub async fn list_available_networks() -> Vec<String> {
     let output = match Command::new("nmcli")
         .args(["-t", "-f", "ssid", "dev", "wifi", "list"])

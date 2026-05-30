@@ -162,6 +162,11 @@ pub async fn handle_pause(
         crate::routing::on_disconnect(&[]);
     }).await;
 
+    // Record the pause in daemon state so other paths (trusted-network
+    // auto-connect, a manual reconnect) can tell we're intentionally paused,
+    // and so the resume timer can detect if the pause was cancelled out from
+    // under it instead of blindly reconnecting.
+    state.write().await.set_paused(body.duration_secs);
     info!("[pause] VPN paused for {} seconds", body.duration_secs);
 
     // Background task: wait, then reconnect.
@@ -169,6 +174,12 @@ pub async fn handle_pause(
     let pause_duration = body.duration_secs;
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(pause_duration)).await;
+        // If the pause was cancelled during the window (e.g. the user manually
+        // reconnected — authorize() clears `paused`), don't clobber that state.
+        if !pause_state.read().await.is_paused() {
+            info!("[pause] pause cancelled before timer fired — skipping auto-resume");
+            return;
+        }
         info!("[pause] resuming connection");
 
         let cfg = match crate::config::load_config() {

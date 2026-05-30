@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   interface Props {
     killSwitch: boolean;
     splitTunnel: boolean;
@@ -28,7 +29,8 @@
   }: Props = $props();
 
   let newDomain = $state('');
-  let dnsInput = $state(dnsServers.join(', '));
+  // Seed the editable DNS text once from the prop (untrack = intentional).
+  let dnsInput = $state(untrack(() => dnsServers.join(', ')));
 
   function handleAddDomain() {
     const domain = newDomain.trim().toLowerCase();

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   interface Props {
     config?: {
       mode?: 'full' | 'split';
@@ -12,8 +13,8 @@
     onSave
   }: Props = $props();
 
-  let mode = $state<'full' | 'split'>(config.mode ?? 'full');
-  let selectedDomains = $state<string[]>(config.domains ?? []);
+  let mode = $state<'full' | 'split'>(untrack(() => config.mode ?? 'full'));
+  let selectedDomains = $state<string[]>(untrack(() => config.domains ?? []));
   let newDomain = $state('');
 
   const presetGroups = [

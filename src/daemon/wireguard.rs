@@ -6,6 +6,12 @@
 //! 3. Call `wg-quick up wg0` to bring up the interface
 //! 4. On disconnect: `wg-quick down wg0` + POST /v2/wireguard/logout
 
+// Complete WireGuard fallback-protocol API ported from the APK. Today only the
+// login path is wired into the primary connect flow; the remaining lifecycle
+// (disconnect/logout/status parsing) is intentionally kept ready for when the
+// WG fallback is enabled — so the not-yet-called items are allowed here.
+#![allow(dead_code)]
+
 use tokio::process::Command;
 use tracing::{info, warn};
 

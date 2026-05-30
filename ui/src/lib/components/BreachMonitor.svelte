@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   interface BreachEntry {
     name: string; title: string; domain: string; date: string;
     data_classes: string[]; description: string;
@@ -16,7 +17,7 @@
 
   let { onCheck, onBack, userEmail = '' }: Props = $props();
 
-  let email = $state(userEmail);
+  let email = $state(untrack(() => userEmail)); // seed once from prop
   let checking = $state(false);
   let result = $state<BreachResult | null>(null);
   let error = $state('');

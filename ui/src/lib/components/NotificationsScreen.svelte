@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   interface Notification {
     id: string;
     title: string;
@@ -24,14 +25,16 @@
     onSave
   }: Props = $props();
 
-  let settings = $state({
+  // Seed once from the config prop (untrack = intentional initial read; the
+  // form owns the values after mount and persists on change).
+  let settings = $state(untrack(() => ({
     desktopNotifications: config.desktopNotifications ?? true,
     connectNotify: config.connectNotify ?? true,
     disconnectNotify: config.disconnectNotify ?? true,
     killSwitchNotify: config.killSwitchNotify ?? true,
     failureNotify: config.failureNotify ?? true,
     subscriptionNotify: config.subscriptionNotify ?? true
-  });
+  })));
 
   let recentNotifications = $state<Notification[]>([
     {

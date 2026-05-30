@@ -10,6 +10,12 @@
 //! Supports UDP and TCP transports, plus the `--scramble` option for
 //! obfuscated connections (when the server advertises scramble support).
 
+// Complete OpenVPN fallback-protocol API ported from the APK. Only the connect
+// path is wired into the primary flow today; the rest of the lifecycle
+// (disconnect/is_connected/stats) and the config `dns` field are intentionally
+// kept ready for when the OVPN fallback is enabled — so allow the unused items.
+#![allow(dead_code)]
+
 use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::process::Command;
 use tracing::info;

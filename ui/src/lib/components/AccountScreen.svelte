@@ -133,8 +133,9 @@
 
       <div class="login-form card">
         <div class="form-group">
-          <label class="form-label">Username</label>
+          <label class="form-label" for="login-username">Username</label>
           <input
+            id="login-username"
             type="text"
             bind:value={loginUsername}
             placeholder="your username"
@@ -144,8 +145,9 @@
         </div>
 
         <div class="form-group">
-          <label class="form-label">Password</label>
+          <label class="form-label" for="login-password">Password</label>
           <input
+            id="login-password"
             type="password"
             bind:value={loginPassword}
             placeholder="your password"

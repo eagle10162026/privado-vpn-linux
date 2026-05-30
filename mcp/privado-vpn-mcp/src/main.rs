@@ -7,22 +7,11 @@
 //!
 //! Registered in LM Studio's mcp.json. No port needed (stdio transport).
 
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};
 
 const DAEMON_API: &str = "http://127.10.0.18:1600";
-
-/// PIN for daemon operations. Override with PRIVADO_VPN_PIN env var.
-fn vpn_pin() -> String {
-    std::env::var("PRIVADO_VPN_PIN").unwrap_or_else(|_| "1234".to_string())
-}
-
-/// Resolve the config file path at runtime ($HOME/.config/privado-vpn/config.json).
-fn config_path() -> String {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-    format!("{home}/.config/privado-vpn/config.json")
-}
+const VPN_PIN: &str = "1016";
 
 fn main() {
     let stdin = io::stdin();
@@ -125,10 +114,10 @@ fn get_tool_definitions() -> Vec<Value> {
                 "protocol": { "type": "string", "description": "ikev2, wireguard, or openvpn" }
             }
         })),
-        tool_def("vpn_route_llm_browser", "Toggle routing the LLM browser through VPN. Does NOT restrict tools. Only affects network path.", json!({
+        tool_def("vpn_route_llm_browser", "Toggle routing the LLM browser (Stygian) through VPN. Does NOT restrict tools. Only affects network path.", json!({
             "type": "object",
             "properties": {
-                "enabled": { "type": "boolean", "description": "true = browser traffic goes through VPN, false = direct" }
+                "enabled": { "type": "boolean", "description": "true = Stygian traffic goes through VPN, false = direct" }
             },
             "required": ["enabled"]
         })),
@@ -197,33 +186,32 @@ fn execute_tool(name: &str, args: &Value) -> String {
         .build()
         .unwrap();
 
-    let pin = vpn_pin();
     rt.block_on(async {
         match name {
             "vpn_status" => daemon_get("/status").await,
             "vpn_connect" => {
                 let country = args["country"].as_str().unwrap_or("nl");
                 let server_host = args["server_host"].as_str();
-                let mut body = json!({ "pin": pin, "country": country });
+                let mut body = json!({ "pin": VPN_PIN, "country": country });
                 if let Some(host) = server_host {
                     body["server_host"] = json!(host);
                 }
                 daemon_post("/connect", &body).await
             }
             "vpn_disconnect" => {
-                daemon_post("/disconnect", &json!({ "pin": pin })).await
+                daemon_post("/disconnect", &json!({ "pin": VPN_PIN })).await
             }
             "vpn_reconnect" => {
                 let host = args["server_host"].as_str().unwrap_or("");
                 daemon_post("/reconnect", &json!({
-                    "pin": pin,
+                    "pin": VPN_PIN,
                     "server_host": host,
                 })).await
             }
             "vpn_pause" => {
                 let duration = args["duration_secs"].as_u64().unwrap_or(300);
                 daemon_post("/pause", &json!({
-                    "pin": pin,
+                    "pin": VPN_PIN,
                     "duration_secs": duration,
                 })).await
             }
@@ -251,9 +239,9 @@ fn execute_tool(name: &str, args: &Value) -> String {
                 output.push_str("=== DNS ===\n");
                 output.push_str(&read_file_str("/etc/resolv.conf").await);
                 output.push_str("\n=== POLICY ROUTES ===\n");
-                output.push_str(&shell_exec_str("ip rule list | grep 1234").await);
-                output.push_str("\n=== ROUTE TABLE 1234 ===\n");
-                output.push_str(&shell_exec_str("ip route show table 1234").await);
+                output.push_str(&shell_exec_str("ip rule list | grep 1016").await);
+                output.push_str("\n=== ROUTE TABLE 1016 ===\n");
+                output.push_str(&shell_exec_str("ip route show table 1016").await);
                 output.push_str("\n=== KILLSWITCH ===\n");
                 output.push_str(&shell_exec_str("iptables -L PRIVADO_KILLSWITCH -n 2>&1").await);
                 output.push_str("\n=== STRONGSWAN ===\n");
@@ -268,7 +256,7 @@ fn execute_tool(name: &str, args: &Value) -> String {
             "vpn_routing_status" => {
                 let mut out = shell_exec_str("ip rule list").await;
                 out.push_str("\n---\n");
-                out.push_str(&shell_exec_str("ip route show table 1234").await);
+                out.push_str(&shell_exec_str("ip route show table 1016").await);
                 out
             }
             "vpn_dns_status" => read_file_str("/etc/resolv.conf").await,
@@ -345,13 +333,13 @@ async fn read_file_str(path: &str) -> String {
     }
 }
 
+const CONFIG_PATH: &str = "/home/joe/.config/privado-vpn/config.json";
 const VPN_CGROUP: &str = "/sys/fs/cgroup/net_cls/privado_vpn";
 
 /// Set a routing toggle in config.json and apply/remove the cgroup routing.
 async fn set_routing_toggle(field: &str, enabled: bool) -> String {
-    let cfg_path = config_path();
     // Read current config.
-    let text = match tokio::fs::read_to_string(&cfg_path).await {
+    let text = match tokio::fs::read_to_string(CONFIG_PATH).await {
         Ok(t) => t,
         Err(e) => return format!("read config: {e}"),
     };
@@ -365,7 +353,7 @@ async fn set_routing_toggle(field: &str, enabled: bool) -> String {
 
     // Write back.
     let new_text = serde_json::to_string_pretty(&config).unwrap_or_default();
-    if let Err(e) = tokio::fs::write(&cfg_path, &new_text).await {
+    if let Err(e) = tokio::fs::write(CONFIG_PATH, &new_text).await {
         return format!("write config: {e}");
     }
 
@@ -375,21 +363,22 @@ async fn set_routing_toggle(field: &str, enabled: bool) -> String {
         let _ = tokio::fs::create_dir_all(VPN_CGROUP).await;
         let _ = tokio::fs::write(
             format!("{VPN_CGROUP}/net_cls.classid"),
-            "0x00123400\n",
+            "0x00101600\n",
         ).await;
 
         // Add iptables mark rule if not already present.
         let _ = tokio::process::Command::new("iptables")
             .args(["-t", "mangle", "-C", "OUTPUT",
-                   "-m", "cgroup", "--cgroup", "0x00123400",
-                   "-j", "MARK", "--set-mark", "0x1234"])
+                   "-m", "cgroup", "--cgroup", "0x00101600",
+                   "-j", "MARK", "--set-mark", "0x1016"])
             .output().await
             .map(|o| {
                 if !o.status.success() {
+                    // Rule doesn't exist yet — add it.
                     let _ = std::process::Command::new("iptables")
                         .args(["-t", "mangle", "-A", "OUTPUT",
-                               "-m", "cgroup", "--cgroup", "0x00123400",
-                               "-j", "MARK", "--set-mark", "0x1234"])
+                               "-m", "cgroup", "--cgroup", "0x00101600",
+                               "-j", "MARK", "--set-mark", "0x1016"])
                         .output();
                 }
             });
@@ -402,8 +391,7 @@ async fn set_routing_toggle(field: &str, enabled: bool) -> String {
 
 /// Get current state of both routing toggles.
 async fn get_routing_toggles() -> String {
-    let cfg_path = config_path();
-    let text = match tokio::fs::read_to_string(&cfg_path).await {
+    let text = match tokio::fs::read_to_string(CONFIG_PATH).await {
         Ok(t) => t,
         Err(_) => return r#"{"route_llm_browser": false, "route_llm_tools": false, "vpn_connected": false}"#.to_string(),
     };

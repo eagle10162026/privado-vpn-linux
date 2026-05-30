@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   interface Props {
     isActive?: boolean;
     config?: {
@@ -22,22 +23,24 @@
     onSave
   }: Props = $props();
 
-  let filters = $state({
+  // Seed local editable state from the config prop ONCE (untrack = intentional
+  // initial read; the form owns the values after mount and saves on change).
+  let filters = $state(untrack(() => ({
     adBlocking: config.adBlocking ?? true,
     trackerBlocking: config.trackerBlocking ?? true,
     malwareProtection: config.malwareProtection ?? true,
     phishingProtection: config.phishingProtection ?? true,
     adultContent: config.adultContent ?? false
-  });
+  })));
 
-  let stats = $state({
+  let stats = $state(untrack(() => ({
     adsBlocked: config.adsBlocked ?? 12847,
     trackersBlocked: config.trackersBlocked ?? 5234,
     threatsBlocked: config.threatsBlocked ?? 89
-  });
+  })));
 
-  let dnsProvider = $state(config.dnsProvider ?? 'privado');
-  let customBlocklist = $state<string[]>(config.customBlocklist ?? []);
+  let dnsProvider = $state(untrack(() => config.dnsProvider ?? 'privado'));
+  let customBlocklist = $state<string[]>(untrack(() => config.customBlocklist ?? []));
   let newDomain = $state('');
 
   const dnsProviders = [
