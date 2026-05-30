@@ -71,6 +71,71 @@ enum Commands {
         key:   String,
         value: String,
     },
+    /// Manage traffic routing rules (process/domain/ip/port → VPN or direct)
+    Route {
+        #[command(subcommand)]
+        action: RouteAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum RouteAction {
+    /// List all routing rules
+    List,
+    /// Add a routing rule
+    Add {
+        /// Match type: process | domain | ip_cidr | port | port_range
+        #[arg(long = "type")]
+        match_type: String,
+        /// Match value (process: name or uid:N; domain: fqdn; ip_cidr: CIDR;
+        /// port: N; port_range: lo-hi)
+        #[arg(long)]
+        value: String,
+        /// Action: vpn (tunnel) or direct (bypass)
+        #[arg(long, default_value = "vpn")]
+        action: String,
+        /// Human-readable name (defaults to "<type>:<value>")
+        #[arg(long)]
+        name: Option<String>,
+        /// Protocol for port rules: tcp | udp (omit for both)
+        #[arg(long)]
+        protocol: Option<String>,
+        /// Preferred exit server hostname (omit to use the active tunnel)
+        #[arg(long)]
+        exit_server: Option<String>,
+        /// Authorization PIN
+        #[arg(long)]
+        pin: Option<String>,
+    },
+    /// Update an existing routing rule by id (only provided fields change)
+    Update {
+        /// Rule id
+        id: String,
+        #[arg(long = "type")]
+        match_type: Option<String>,
+        #[arg(long)]
+        value: Option<String>,
+        #[arg(long)]
+        action: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        protocol: Option<String>,
+        #[arg(long)]
+        exit_server: Option<String>,
+        /// Enable/disable the rule
+        #[arg(long)]
+        enabled: Option<bool>,
+        #[arg(long)]
+        pin: Option<String>,
+    },
+    /// Delete a routing rule by id
+    Delete {
+        /// Rule id
+        id: String,
+        #[arg(long)]
+        pin: Option<String>,
+    },
 }
 
 fn main() {
@@ -106,15 +171,24 @@ fn main() {
         Some(Commands::Logout)            => { init_tracing(); cmd_logout(); }
         Some(Commands::Config)            => { init_tracing(); cmd_show_config(); }
         Some(Commands::Set { key, value }) => { init_tracing(); cmd_set(&key, &value); }
+        Some(Commands::Route { action })  => { init_tracing(); cmd_route(action); }
     }
 }
 
 fn init_tracing() {
+    // Build the filter from RUST_LOG when present, else default to info for our
+    // crate. Crucially, always ADD a `privado_vpn=info` directive so even a
+    // malformed or overly-restrictive RUST_LOG (e.g. `privado_vpn=off`) can
+    // never silently swallow ERROR/INFO output from our own crate.
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("privado_vpn=info"))
+        .add_directive(
+            "privado_vpn=info"
+                .parse()
+                .expect("static tracing directive must parse"),
+        );
     let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "privado_vpn=info".into()),
-        )
+        .with_env_filter(filter)
         .with_target(false)
         .try_init();
 }
@@ -155,7 +229,7 @@ fn cmd_status() {
 fn cmd_servers() {
     match client::servers() {
         Ok(entries) => {
-            println!("{:<4}  {:<20}  {}", "Code", "Display", "Remote");
+            println!("{:<4}  {:<20}  Remote", "Code", "Display");
             println!("{}", "-".repeat(70));
             for e in &entries {
                 println!("{:<4}  {:<20}  {}", e.country_code, e.display, e.remote_host);
@@ -211,16 +285,31 @@ async fn cmd_login(username: Option<String>, password: Option<String>) {
                 refresh_token: resp.refresh_token.clone(),
                 expires_at:    resp.expires_at(),
             };
-            if let Err(e) = config::save_token(&token) { error!("save token: {e}"); }
-            if let Err(e) = config::save_credentials(&user, &pass) { error!("save creds: {e}"); }
+            if let Err(e) = config::save_token(&token) {
+                eprintln!("save token: {e}");
+                error!("save token: {e}");
+            }
+            if let Err(e) = config::save_credentials(&user, &pass) {
+                eprintln!("save creds: {e}");
+                error!("save creds: {e}");
+            }
             let mut cfg = config::load_config().unwrap_or_default();
             cfg.username = user;
             cfg.password = pass;
-            if let Err(e) = config::save_config(&cfg) { error!("save config: {e}"); }
+            if let Err(e) = config::save_config(&cfg) {
+                eprintln!("save config: {e}");
+                error!("save config: {e}");
+            }
             println!("Login successful. Portal credentials saved.");
             let _ = std::io::stdout().flush();
         }
-        Err(e) => { error!("Login failed: {e}"); std::process::exit(1); }
+        Err(e) => {
+            // Print the definitive failure directly to stderr IN ADDITION to
+            // tracing, so it is never suppressed by a RUST_LOG override.
+            eprintln!("Login failed: {e}");
+            error!("login failed: {e}");
+            std::process::exit(1);
+        }
     }
 }
 
@@ -232,13 +321,33 @@ fn prompt_input(label: &str) -> String {
     s.trim().to_string()
 }
 
+/// RAII guard that re-enables terminal echo on Drop. Disabling echo with
+/// `stty -echo` and then reading the password leaves the terminal unusable if
+/// the read panics or the process returns early; running `stty echo` from Drop
+/// guarantees the terminal is restored on every exit path.
+struct EchoGuard;
+
+impl EchoGuard {
+    fn disable() -> Self {
+        let _ = std::process::Command::new("stty").arg("-echo").status();
+        EchoGuard
+    }
+}
+
+impl Drop for EchoGuard {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("stty").arg("echo").status();
+    }
+}
+
 fn prompt_password(label: &str) -> String {
     eprint!("{label}: ");
     let _ = std::io::stderr().flush();
-    let _ = std::process::Command::new("stty").arg("-echo").status();
+    let _guard = EchoGuard::disable();
     let mut s = String::new();
     let _ = std::io::stdin().read_line(&mut s);
-    let _ = std::process::Command::new("stty").arg("echo").status();
+    // _guard's Drop restores echo here (and on any early return/panic).
+    drop(_guard);
     eprintln!();
     s.trim().to_string()
 }
@@ -291,4 +400,86 @@ fn cmd_set(key: &str, value: &str) {
         }
     }
     if let Err(e) = config::save_config(&cfg) { error!("save failed: {e}"); }
+}
+
+// ─── Routing rules (daemon-backed) ───────────────────────────────────────────
+
+fn cmd_route(action: RouteAction) {
+    match action {
+        RouteAction::List => match client::route_list() {
+            Ok(value) => print_routing_rules(&value),
+            Err(e) => { eprintln!("route list failed: {e}"); error!("route list failed: {e}"); std::process::exit(1); }
+        },
+        RouteAction::Add { match_type, value, action, name, protocol, exit_server, pin } => {
+            let pin = require_pin(pin);
+            let rule = serde_json::json!({
+                "id": "",
+                "enabled": true,
+                "name": name.unwrap_or_else(|| format!("{match_type}:{value}")),
+                "match_type": match_type,
+                "match_value": value,
+                "protocol": protocol,
+                "action": action,
+                "exit_server": exit_server,
+                "priority": 0,
+            });
+            match client::route_add(&pin, rule) {
+                Ok(v) => { println!("Rule added."); print_routing_rules(&v); }
+                Err(e) => { eprintln!("route add failed: {e}"); error!("route add failed: {e}"); std::process::exit(1); }
+            }
+        }
+        RouteAction::Update { id, match_type, value, action, name, protocol, exit_server, enabled, pin } => {
+            let pin = require_pin(pin);
+            // Fetch the existing rule so omitted fields are preserved.
+            let existing = match client::route_list() {
+                Ok(v) => v.get("rules")
+                    .and_then(|r| r.as_array())
+                    .and_then(|arr| arr.iter().find(|r| r.get("id").and_then(|i| i.as_str()) == Some(id.as_str())))
+                    .cloned(),
+                Err(e) => { eprintln!("route update (fetch) failed: {e}"); error!("route update fetch failed: {e}"); std::process::exit(1); }
+            };
+            let Some(mut rule) = existing else {
+                eprintln!("route update failed: rule '{id}' not found");
+                std::process::exit(1);
+            };
+            if let Some(v) = match_type { rule["match_type"] = serde_json::Value::String(v); }
+            if let Some(v) = value { rule["match_value"] = serde_json::Value::String(v); }
+            if let Some(v) = action { rule["action"] = serde_json::Value::String(v); }
+            if let Some(v) = name { rule["name"] = serde_json::Value::String(v); }
+            if let Some(v) = protocol { rule["protocol"] = serde_json::Value::String(v); }
+            if let Some(v) = exit_server { rule["exit_server"] = serde_json::Value::String(v); }
+            if let Some(v) = enabled { rule["enabled"] = serde_json::Value::Bool(v); }
+            match client::route_update(&pin, &id, rule) {
+                Ok(v) => { println!("Rule updated."); print_routing_rules(&v); }
+                Err(e) => { eprintln!("route update failed: {e}"); error!("route update failed: {e}"); std::process::exit(1); }
+            }
+        }
+        RouteAction::Delete { id, pin } => {
+            let pin = require_pin(pin);
+            match client::route_delete(&pin, &id) {
+                Ok(v) => { println!("Rule deleted."); print_routing_rules(&v); }
+                Err(e) => { eprintln!("route delete failed: {e}"); error!("route delete failed: {e}"); std::process::exit(1); }
+            }
+        }
+    }
+}
+
+fn print_routing_rules(value: &serde_json::Value) {
+    let rules = value.get("rules").and_then(|r| r.as_array());
+    match rules {
+        Some(arr) if !arr.is_empty() => {
+            println!("{:<22}  {:<8}  {:<10}  {:<6}  VALUE / EXIT", "ID", "ENABLED", "TYPE", "ACTION");
+            println!("{}", "-".repeat(80));
+            for r in arr {
+                let id = r.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                let enabled = r.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+                let mt = r.get("match_type").and_then(|v| v.as_str()).unwrap_or("?");
+                let action = r.get("action").and_then(|v| v.as_str()).unwrap_or("?");
+                let mv = r.get("match_value").and_then(|v| v.as_str()).unwrap_or("");
+                let exit = r.get("exit_server").and_then(|v| v.as_str()).unwrap_or("(active)");
+                println!("{id:<22}  {:<8}  {mt:<10}  {action:<6}  {mv} → {exit}", if enabled { "yes" } else { "no" });
+            }
+        }
+        _ => println!("(no routing rules)"),
+    }
 }

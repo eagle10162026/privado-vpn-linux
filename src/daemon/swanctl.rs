@@ -57,14 +57,14 @@ fn parse_list_sas(text: &str) -> VpnStatus {
                 if let Some(br) = rest.find('[') { remote_ip = Some(rest[..br].trim().to_string()); }
             }
         }
-        if lt.starts_with("established ") {
-            duration_secs = parse_duration(&lt["established ".len()..]);
+        if let Some(rest) = lt.strip_prefix("established ") {
+            duration_secs = parse_duration(rest);
         }
         if lt.starts_with("in ")  || lt.starts_with("in\t")  {
-            bytes_in  = first_u64(lt).unwrap_or(0);
+            bytes_in  = bytes_before_label(lt).unwrap_or(0);
         }
         if lt.starts_with("out ") || lt.starts_with("out\t") {
-            bytes_out = first_u64(lt).unwrap_or(0);
+            bytes_out = bytes_before_label(lt).unwrap_or(0);
         }
     }
 
@@ -81,18 +81,18 @@ fn parse_list_sas(text: &str) -> VpnStatus {
     s
 }
 
-fn first_u64(line: &str) -> Option<u64> {
-    let mut n: u64 = 0;
-    let mut started = false;
-    for c in line.chars() {
-        if c.is_ascii_digit() {
-            started = true;
-            n = n.saturating_mul(10).saturating_add((c as u8 - b'0') as u64);
-        } else if started {
-            return Some(n);
-        }
-    }
-    if started { Some(n) } else { None }
+/// Extract the byte count from a `swanctl --list-sas` child traffic line.
+///
+/// Lines look like `in  c1a2b3d4,  1234 bytes,  10 packets`. The SPI
+/// (`c1a2b3d4`) contains ASCII digits, so a naive "first run of digits" parse
+/// returns garbage from the SPI instead of the real count. Instead, locate the
+/// comma-separated segment that contains the literal `bytes` and parse the
+/// integer at the front of that segment.
+fn bytes_before_label(line: &str) -> Option<u64> {
+    line.split(',')
+        .find(|seg| seg.contains("bytes"))
+        .and_then(|seg| seg.split_whitespace().next())
+        .and_then(|n| n.parse::<u64>().ok())
 }
 
 fn parse_duration(s: &str) -> u64 {
@@ -319,4 +319,41 @@ fn strip_plugin_noise(stderr: &str) -> String {
         .join("\n")
         .trim()
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bytes_before_label_ignores_hex_spi_digits() {
+        // The SPI `c1a2b3d4` contains digits 1,2,3,4 — the parser must NOT
+        // return those; it must return the count immediately before `bytes`.
+        assert_eq!(bytes_before_label("in  c1a2b3d4,  1234 bytes,  10 packets"), Some(1234));
+        assert_eq!(bytes_before_label("out e5f60718,  98765 bytes,  42 packets"), Some(98765));
+    }
+
+    #[test]
+    fn parse_list_sas_reads_real_byte_counts() {
+        // A representative `swanctl --list-sas` block with hex SPIs in the
+        // child traffic lines. Byte counts must come from before `bytes`, not
+        // from digits embedded in the SPI.
+        let sample = "\
+privado: #1, ESTABLISHED, IKEv2, abc123def456_i* 0011223344556677_r*
+  local  'user@example' @ 10.0.0.2[4500]
+  remote 'vpn.privado.io' @ 185.107.56.10[4500]
+  established 123s ago, rekeying in 0s
+  privado-child: #1, reqid 1, INSTALLED, TUNNEL, ESP:AES_GCM_16-256
+    installed 123s ago
+    in  c1a2b3d4,  524288 bytes,  900 packets
+    out 1b2c3d4e,  131072 bytes,  450 packets
+    local  0.0.0.0/0
+    remote 0.0.0.0/0";
+        let status = parse_list_sas(sample);
+        assert!(status.connected);
+        assert_eq!(status.server.as_deref(), Some("vpn.privado.io"));
+        assert_eq!(status.bytes_in, 524288);
+        assert_eq!(status.bytes_out, 131072);
+        assert_eq!(status.duration_secs, 123);
+    }
 }

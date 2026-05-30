@@ -135,21 +135,29 @@ async fn dispatch(req: Request, state: &SharedState) -> Response {
                 return Response::Err { code: ErrorCode::StrongswanError, message: e };
             }
 
-            state.write().await.authorize(country.clone());
+            {
+                let mut st = state.write().await;
+                st.authorize(country.clone());
+                st.current_server = Some(host_owned.clone());
+            }
 
             if let Err(e) = swanctl::initiate_dynamic().await {
                 state.write().await.revoke();
                 return Response::Err { code: ErrorCode::StrongswanError, message: e };
             }
 
-            // Install routing.
+            // Install routing. Resolve + persist the endpoint IPs (R5) so a later
+            // disconnect removes exactly these mangle MARK rules, then apply the
+            // routing-rule engine.
             let dns = cfg.dns_servers.clone();
             let ks = cfg.kill_switch;
             let sd = cfg.split_domains.clone();
-            let h = host.to_string();
+            let cfg_for_rules = cfg.clone();
+            let remote_ips = crate::routing::resolve_domain_ips(std::slice::from_ref(&host_owned));
+            state.write().await.current_remote_ips = remote_ips.clone();
             tokio::task::spawn_blocking(move || {
-                let remote_ips = crate::routing::resolve_domain_ips(&[h]);
                 crate::routing::on_connect(&remote_ips, &dns, ks, &sd);
+                crate::daemon::routing_rules::apply_routing_rules(&cfg_for_rules);
             });
 
             tokio::time::sleep(Duration::from_millis(700)).await;
@@ -165,10 +173,17 @@ async fn dispatch(req: Request, state: &SharedState) -> Response {
             if pin != vpn_pin() {
                 return Response::Err { code: ErrorCode::BadPin, message: "PIN rejected".into() };
             }
-            state.write().await.revoke();
+            // Capture the resolved endpoint IPs before revoke() clears them (R5).
+            let remote_ips = {
+                let mut st = state.write().await;
+                let ips = st.current_remote_ips.clone();
+                st.revoke();
+                ips
+            };
 
-            let _ = tokio::task::spawn_blocking(|| {
-                crate::routing::on_disconnect(&[]);
+            let _ = tokio::task::spawn_blocking(move || {
+                crate::routing::on_disconnect(&remote_ips);
+                crate::daemon::routing_rules::clear_routing_rules();
             }).await;
 
             swanctl::terminate_all_privado().await;

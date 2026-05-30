@@ -102,6 +102,40 @@ pub fn connect_vpn(pin: &str, country: &str) -> Result<VpnStatus, String> {
     }
 }
 
+// ─── Routing rules ───────────────────────────────────────────────────────────
+
+/// List routing rules (raw JSON `{ "rules": [...] }`) from the daemon.
+pub fn route_list() -> Result<serde_json::Value, String> {
+    let text = http_get("/routing/rules")?;
+    serde_json::from_str(&text).map_err(|e| format!("parse rules '{text}': {e}"))
+}
+
+/// POST a routing-rule mutation and return the daemon's JSON response.
+fn route_post(path: &str, body: &impl serde::Serialize) -> Result<serde_json::Value, String> {
+    let text = http_post(path, body)?;
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("parse '{text}': {e}"))?;
+    if let Some(err) = value.get("error").and_then(|v| v.as_str()) {
+        return Err(err.to_string());
+    }
+    Ok(value)
+}
+
+/// Add a routing rule (daemon assigns id/priority when empty).
+pub fn route_add(pin: &str, rule: serde_json::Value) -> Result<serde_json::Value, String> {
+    route_post("/routing/rules", &serde_json::json!({ "pin": pin, "rule": rule }))
+}
+
+/// Replace a routing rule by id.
+pub fn route_update(pin: &str, id: &str, rule: serde_json::Value) -> Result<serde_json::Value, String> {
+    route_post(&format!("/routing/rules/{id}"), &serde_json::json!({ "pin": pin, "rule": rule }))
+}
+
+/// Delete a routing rule by id.
+pub fn route_delete(pin: &str, id: &str) -> Result<serde_json::Value, String> {
+    route_post(&format!("/routing/rules/{id}/delete"), &serde_json::json!({ "pin": pin }))
+}
+
 pub fn disconnect_vpn(pin: &str) -> Result<VpnStatus, String> {
     #[derive(serde::Serialize)]
     struct DisconnectBody { pin: String }

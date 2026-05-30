@@ -12,9 +12,6 @@ use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 use tauri::State;
 
-#[allow(unused_imports)]
-use serde_json;
-
 // ====== PING-BASED SERVER SELECTION ======
 
 #[tauri::command]
@@ -191,7 +188,7 @@ pub async fn vpn_run_speed_test_privado(state: State<'_, AppState>) -> Result<Sp
         pings.push(t.elapsed().as_millis() as u32);
     }
     pings.sort();
-    let ping_ms = pings.get(1).copied().unwrap_or(pings[0]);
+    let ping_ms = pings.get(1).or_else(|| pings.first()).copied().unwrap_or(0);
 
     // Download test (10MB).
     let dl_start = Instant::now();
@@ -345,7 +342,6 @@ pub async fn vpn_run_diagnostics(state: State<'_, AppState>) -> Result<serde_jso
     let dns_ok = tokio::net::lookup_host("google.com:443").await.is_ok();
     results.insert("dns_working".into(), serde_json::json!(dns_ok));
 
-    // Connectivity probe — test if VPN infrastructure is reachable (like pinging google.com for DNS).
     let vpn_server = "ams-101.vpn.privado.io";
     let ping_start = Instant::now();
     let vpn_reachable = tokio::time::timeout(
@@ -762,66 +758,6 @@ pub async fn vpn_manage_subscription(state: State<'_, AppState>) -> Result<serde
     }))
 }
 
-// ====== PER-PROCESS SPLIT TUNNEL ======
-
-#[tauri::command]
-pub async fn vpn_add_split_process(uid: u32, _state: State<'_, AppState>) -> Result<(), String> {
-    let result = tokio::process::Command::new("iptables")
-        .args([
-            "-t", "mangle", "-A", "OUTPUT",
-            "-m", "owner", "--uid-owner", &uid.to_string(),
-            "-j", "MARK", "--set-mark", "0",
-        ])
-        .output().await
-        .map_err(|e| format!("iptables: {e}"))?;
-
-    if !result.status.success() {
-        return Err(format!("iptables: {}", String::from_utf8_lossy(&result.stderr)));
-    }
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn vpn_remove_split_process(uid: u32, _state: State<'_, AppState>) -> Result<(), String> {
-    let result = tokio::process::Command::new("iptables")
-        .args([
-            "-t", "mangle", "-D", "OUTPUT",
-            "-m", "owner", "--uid-owner", &uid.to_string(),
-            "-j", "MARK", "--set-mark", "0",
-        ])
-        .output().await
-        .map_err(|e| format!("iptables: {e}"))?;
-
-    if !result.status.success() {
-        return Err(format!("iptables: {}", String::from_utf8_lossy(&result.stderr)));
-    }
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn vpn_list_split_processes(_state: State<'_, AppState>) -> Result<Vec<serde_json::Value>, String> {
-    let output = tokio::process::Command::new("iptables")
-        .args(["-t", "mangle", "-L", "OUTPUT", "-n", "--line-numbers"])
-        .output().await
-        .map_err(|e| format!("iptables: {e}"))?;
-
-    let text = String::from_utf8_lossy(&output.stdout);
-    let mut processes = Vec::new();
-
-    for line in text.lines() {
-        if line.contains("owner UID match") && line.contains("MARK set 0x0") {
-            if let Some(uid_part) = line.split("UID match").last() {
-                let uid_str = uid_part.trim().split_whitespace().next().unwrap_or("");
-                if let Ok(uid) = uid_str.parse::<u32>() {
-                    processes.push(serde_json::json!({ "uid": uid }));
-                }
-            }
-        }
-    }
-
-    Ok(processes)
-}
-
 // ====== INTERNAL HELPERS ======
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -908,6 +844,10 @@ fn sha1_hex(data: &[u8]) -> String {
 
     for chunk in msg.chunks(64) {
         let mut w = [0u32; 80];
+        // The SHA-1 message schedule reads w[i-3..i-16] and the round loop
+        // matches on the round index `i`, so a plain index loop is the clearest
+        // form here — the iterator rewrite clippy suggests would be less legible.
+        #[allow(clippy::needless_range_loop)]
         for i in 0..16 {
             w[i] = u32::from_be_bytes([
                 chunk[i * 4], chunk[i * 4 + 1], chunk[i * 4 + 2], chunk[i * 4 + 3],
@@ -919,6 +859,7 @@ fn sha1_hex(data: &[u8]) -> String {
 
         let (mut a, mut b, mut c, mut d, mut e) = (h0, h1, h2, h3, h4);
 
+        #[allow(clippy::needless_range_loop)]
         for i in 0..80 {
             let (f, k) = match i {
                 0..=19 => ((b & c) | ((!b) & d), 0x5A827999u32),

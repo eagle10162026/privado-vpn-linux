@@ -109,16 +109,30 @@ impl PrivadoApi {
     }
 
     async fn find_working_api(&self) -> Option<String> {
-        for server in API_SERVERS {
-            let url = if server.contains("://") {
+        let to_url = |server: &str| {
+            if server.contains("://") {
                 server.to_string()
             } else {
                 format!("https://{server}")
-            };
+            }
+        };
+
+        // Pass 1: prefer a host that returns a real 2xx for /v1/status. A parked
+        // domain / captive portal / reverse proxy that 404s is NOT the Privado
+        // API, so only fall back to a 404-returning host if nothing answers 2xx.
+        let mut fallback_404: Option<String> = None;
+        for server in API_SERVERS {
+            let url = to_url(server);
             match self.client.get(format!("{url}/v1/status")).send().await {
-                Ok(resp) if resp.status().is_success() || resp.status().as_u16() == 404 => {
+                Ok(resp) if resp.status().is_success() => {
                     info!("[API] Using endpoint: {url}");
                     return Some(url);
+                }
+                Ok(resp) if resp.status().as_u16() == 404 => {
+                    // Remember as a last resort but keep looking for a 2xx host.
+                    if fallback_404.is_none() {
+                        fallback_404 = Some(url);
+                    }
                 }
                 Ok(resp) => {
                     warn!("[API] {server} returned {}", resp.status());
@@ -127,6 +141,13 @@ impl PrivadoApi {
                     warn!("[API] {server} unreachable: {e}");
                 }
             }
+        }
+
+        // Pass 2: no 2xx host found — accept a 404-returning host (some API
+        // deployments 404 on /v1/status but still serve /v1/login correctly).
+        if let Some(url) = fallback_404 {
+            info!("[API] no 2xx endpoint; falling back to 404-returning endpoint: {url}");
+            return Some(url);
         }
         None
     }
@@ -166,7 +187,17 @@ impl PrivadoApi {
 
         if let Some(ref token) = data.access_token {
             self.token = Some(token.clone());
-            info!("[API] Login successful — token expires in {}s", data.expires_in.unwrap_or(0));
+            // Compute the real lifetime from the canonical expiry. Privado
+            // usually returns `access_expire_epoch` (absolute) and omits
+            // `expires_in`, so reading `expires_in` directly printed a
+            // misleading "expires in 0s" on a perfectly valid token.
+            let now_epoch = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let expires_at = data.expires_at();
+            let secs_left = expires_at.saturating_sub(now_epoch);
+            info!("[API] Login successful — token valid for {secs_left}s (expires_at epoch {expires_at})");
         } else {
             return Err(format!("login response missing access_token (status {status})"));
         }

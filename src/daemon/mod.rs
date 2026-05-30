@@ -18,6 +18,7 @@ pub mod portal_api;
 pub mod wireguard;
 pub mod openvpn;
 pub mod trusted_networks;
+pub mod routing_rules;
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -41,6 +42,18 @@ pub async fn run() -> Result<(), String> {
     // into the tunnel and kill the host network stack. Only the dynamic
     // privado.conf (mark_out=0x1016 split-tunnel) is valid.
     swanctl::purge_stale_confs().await;
+
+    // One-shot migration of legacy split_tunnel/split_domains into the new
+    // routing-rule engine so the Routing UI/CLI is authoritative going forward.
+    if let Some(mut cfg) = crate::config::load_config() {
+        if crate::config::migrate_split_domains_to_rules(&mut cfg) {
+            if let Err(e) = crate::config::save_config(&cfg) {
+                warn!("[daemon] split_domains→routing_rules migration save failed: {e}");
+            } else {
+                info!("[daemon] migrated legacy split_domains into routing_rules");
+            }
+        }
+    }
 
     // Spawn the guardian.
     let g = shared.clone();
@@ -148,7 +161,9 @@ async fn auto_connect_on_boot(state: state::SharedState) {
     // Authorize in daemon state.
     {
         let cc = http_api::derive_country_from_host(&server_host);
-        state.write().await.authorize(cc);
+        let mut st = state.write().await;
+        st.authorize(cc);
+        st.current_server = Some(server_host.clone());
     }
 
     if let Err(e) = swanctl::initiate_dynamic().await {
@@ -157,14 +172,17 @@ async fn auto_connect_on_boot(state: state::SharedState) {
         return;
     }
 
-    // Install routing.
+    // Install routing. Resolve + persist endpoint IPs (R5), then apply the
+    // routing-rule engine.
     let dns = cfg.dns_servers.clone();
     let kill_switch = cfg.kill_switch;
     let split_domains = cfg.split_domains.clone();
-    let server_host_owned = server_host.clone();
+    let cfg_for_rules = cfg.clone();
+    let remote_ips = crate::routing::resolve_domain_ips(std::slice::from_ref(&server_host));
+    state.write().await.current_remote_ips = remote_ips.clone();
     tokio::task::spawn_blocking(move || {
-        let remote_ips = crate::routing::resolve_domain_ips(&[server_host_owned]);
         crate::routing::on_connect(&remote_ips, &dns, kill_switch, &split_domains);
+        crate::daemon::routing_rules::apply_routing_rules(&cfg_for_rules);
     });
 
     info!("[auto-connect] connection initiated to {server_host}");

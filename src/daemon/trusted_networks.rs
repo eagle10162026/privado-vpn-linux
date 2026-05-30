@@ -31,13 +31,26 @@ pub async fn run_watcher(state: SharedState) {
             None => continue,
         };
 
-        // Skip if no trusted networks configured.
+        // Get current WiFi SSID up front so the transition-tracking state
+        // (`last_ssid` / `was_trusted`) is advanced exactly ONCE per iteration,
+        // at the bottom of the loop, regardless of which branch runs. This
+        // prevents a stale `last_ssid` from masking a real change after an
+        // early `continue`.
+        let current_ssid = get_current_ssid().await;
+
+        let is_trusted = match &current_ssid {
+            Some(ssid) => cfg.trusted_networks.iter().any(|t| t.eq_ignore_ascii_case(ssid)),
+            None => false,
+        };
+
+        // Skip action if no trusted networks configured, but STILL advance the
+        // baseline so re-enabling trusted networks (possibly while already on
+        // one) starts from a correct `was_trusted=false` / current `last_ssid`.
         if cfg.trusted_networks.is_empty() {
+            was_trusted = false;
+            last_ssid = current_ssid;
             continue;
         }
-
-        // Get current WiFi SSID.
-        let current_ssid = get_current_ssid().await;
 
         // Detect SSID change.
         if current_ssid == last_ssid {
@@ -45,22 +58,28 @@ pub async fn run_watcher(state: SharedState) {
         }
 
         let prev_ssid = last_ssid.clone();
-        last_ssid = current_ssid.clone();
-
-        let is_trusted = match &current_ssid {
-            Some(ssid) => cfg.trusted_networks.iter().any(|t| t.eq_ignore_ascii_case(ssid)),
-            None => false,
-        };
-
         let ssid_display = current_ssid.as_deref().unwrap_or("<disconnected>");
+
+        // When a reconnect attempt fails we want to retry next tick WITHOUT
+        // relying on a stale SSID to re-fire the change detector. Advancing
+        // `last_ssid` (always, at the bottom) plus holding `was_trusted` at its
+        // previous value drives the retry intentionally.
+        let mut connect_failed = false;
 
         if is_trusted && !was_trusted {
             // Entering a trusted network — auto-disconnect the VPN.
             info!("[trusted-networks] entered trusted network '{ssid_display}', disconnecting VPN");
 
-            state.write().await.revoke();
-            let _ = tokio::task::spawn_blocking(|| {
-                crate::routing::on_disconnect(&[]);
+            // Capture endpoint IPs before revoke() clears them (R5).
+            let remote_ips = {
+                let mut st = state.write().await;
+                let ips = st.current_remote_ips.clone();
+                st.revoke();
+                ips
+            };
+            let _ = tokio::task::spawn_blocking(move || {
+                crate::routing::on_disconnect(&remote_ips);
+                crate::daemon::routing_rules::clear_routing_rules();
             }).await;
             swanctl::terminate_all_privado().await;
             swanctl::cleanup_config().await;
@@ -74,50 +93,60 @@ pub async fn run_watcher(state: SharedState) {
 
                 if let Err(e) = swanctl::ensure_strongswan_up().await {
                     error!("[trusted-networks] strongSwan start failed: {e}");
-                    was_trusted = is_trusted;
-                    continue;
-                }
-
-                let routes = if cfg.split_tunnel && !cfg.split_domains.is_empty() {
-                    crate::routing::generate_split_routes(&cfg.split_domains)
+                    connect_failed = true;
                 } else {
-                    vec!["0.0.0.0/0".to_string()]
-                };
+                    let routes = if cfg.split_tunnel && !cfg.split_domains.is_empty() {
+                        crate::routing::generate_split_routes(&cfg.split_domains)
+                    } else {
+                        vec!["0.0.0.0/0".to_string()]
+                    };
 
-                if let Err(e) = swanctl::write_dynamic_config(
-                    &server_host, &cfg.username, &cfg.password, &routes, &cfg.dns_servers,
-                ).await {
-                    error!("[trusted-networks] config write failed: {e}");
-                    was_trusted = is_trusted;
-                    continue;
+                    if let Err(e) = swanctl::write_dynamic_config(
+                        &server_host, &cfg.username, &cfg.password, &routes, &cfg.dns_servers,
+                    ).await {
+                        error!("[trusted-networks] config write failed: {e}");
+                        connect_failed = true;
+                    } else {
+                        let cc = http_api::derive_country_from_host(&server_host);
+                        {
+                            let mut st = state.write().await;
+                            st.authorize(cc);
+                            st.current_server = Some(server_host.clone());
+                        }
+
+                        if let Err(e) = swanctl::initiate_dynamic().await {
+                            error!("[trusted-networks] initiate failed: {e}");
+                            state.write().await.revoke();
+                            connect_failed = true;
+                        } else {
+                            let dns = cfg.dns_servers.clone();
+                            let ks = cfg.kill_switch;
+                            let sd = cfg.split_domains.clone();
+                            let cfg_for_rules = cfg.clone();
+                            let remote_ips = crate::routing::resolve_domain_ips(std::slice::from_ref(&server_host));
+                            state.write().await.current_remote_ips = remote_ips.clone();
+                            tokio::task::spawn_blocking(move || {
+                                crate::routing::on_connect(&remote_ips, &dns, ks, &sd);
+                                crate::daemon::routing_rules::apply_routing_rules(&cfg_for_rules);
+                            });
+
+                            info!("[trusted-networks] reconnected to {server_host}");
+                        }
+                    }
                 }
-
-                let cc = http_api::derive_country_from_host(&server_host);
-                state.write().await.authorize(cc);
-
-                if let Err(e) = swanctl::initiate_dynamic().await {
-                    error!("[trusted-networks] initiate failed: {e}");
-                    state.write().await.revoke();
-                    was_trusted = is_trusted;
-                    continue;
-                }
-
-                let dns = cfg.dns_servers.clone();
-                let ks = cfg.kill_switch;
-                let sd = cfg.split_domains.clone();
-                let sh = server_host.clone();
-                tokio::task::spawn_blocking(move || {
-                    let remote_ips = crate::routing::resolve_domain_ips(&[sh]);
-                    crate::routing::on_connect(&remote_ips, &dns, ks, &sd);
-                });
-
-                info!("[trusted-networks] reconnected to {server_host}");
             }
         } else if current_ssid != prev_ssid {
             info!("[trusted-networks] SSID changed to '{ssid_display}' (trusted={is_trusted})");
         }
 
-        was_trusted = is_trusted;
+        // Single, bottom-of-loop state advance. `last_ssid` always tracks the
+        // observed SSID so the change detector stays in sync. `was_trusted` is
+        // held at its prior value on a failed reconnect so the next tick retries
+        // the connect; otherwise it follows the current trust state.
+        last_ssid = current_ssid;
+        if !connect_failed {
+            was_trusted = is_trusted;
+        }
     }
 }
 

@@ -133,6 +133,11 @@ tls-cipher TLS-ECDHE-ECDSA-WITH-AES-256-GCM-SHA384:TLS-ECDHE-RSA-WITH-AES-256-GC
         }
     }
     if !ca_resolved {
+        // Self-test the embedded CA before handing it to openvpn: if the inline
+        // constant ever regresses (truncated / mis-wrapped base64) the failure
+        // would otherwise be an opaque openvpn cert-load abort. Validate up front
+        // and surface a clear error instead.
+        validate_inline_ca(PRIVADO_CA_CERT)?;
         // Inline the GoDaddy G2 root as last resort.
         ovpn_content.push_str("<ca>\n");
         ovpn_content.push_str(PRIVADO_CA_CERT);
@@ -361,8 +366,11 @@ async fn read_sys_stat(iface: &str, stat: &str) -> Option<u64> {
     text.trim().parse().ok()
 }
 
-/// GoDaddy G2 root CA certificate (used by Privado's OpenVPN servers).
-/// Same cert that's in /etc/swanctl/x509ca/ for IKEv2.
+/// GoDaddy Root Certificate Authority - G2 (used by Privado's OpenVPN servers).
+/// This is the exact same self-signed root cert that ships in
+/// /etc/swanctl/x509ca/ for IKEv2 (verified subject:
+/// `CN=Go Daddy Root Certificate Authority - G2`). Canonical 64-char PEM body
+/// lines so it base64-decodes cleanly in `openvpn`'s `<ca>` inline block.
 const PRIVADO_CA_CERT: &str = r#"-----BEGIN CERTIFICATE-----
 MIIDxTCCAq2gAwIBAgIBADANBgkqhkiG9w0BAQsFADCBgzELMAkGA1UEBhMCVVMx
 EDAOBgNVBAgTB0FyaXpvbmExEzARBgNVBAcTClNjb3R0c2RhbGUxGjAYBgNVBAoT
@@ -373,17 +381,115 @@ EwpTY290dHNkYWxlMRowGAYDVQQKExFHb0RhZGR5LmNvbSwgSW5jLjExMC8GA1UE
 AxMoR28gRGFkZHkgUm9vdCBDZXJ0aWZpY2F0ZSBBdXRob3JpdHkgLSBHMjCCASIw
 DQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAL9xYgjx+lk09xvJGKP3gElY6SKD
 E6bFIEMBO4Tx5oVJnyfq9oQbTqC023CYxzIBsQU+B07u9PpPL1kwIuerGVZr4oAH
-/PMWdYA5UXvl+TW2dE6pjYIT5LY/qQOD+qK+ihVqf94Lw7YZFAXK6sOoBJQ7Rnw
-yDfMAZiLIjWltNowRGLfTshxgtDj6AozO091GB94KPutdfMh8+7ArU6SSYmlRJQV
-hGkSBjCypQ5Yj36w6gZoOKcUcqeldHraenjAKOc7xiID7S13MMuyFYkMlNAJWJwG
-Rt+aQUiCdUUEW5ckYRxkhDkCpBBARfQBIukrGDYASiPfJPpY5CZtkqSjQkSbMCkC
-AwEAAaNCMEAwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMCAQYwHQYDVR0O
-BBYEFDqahQcQZyi27/a9BUFuIMGU2g/eMA0GCSqGSIb3DQEBCwUAA4IBAQCZ21151
-fmXWWcDYfF+OwYxdS2hII5PZYe096acvNjpL9DbWu7PdIxztDhC2gV7+AJ1uP2lS
-DvhkCsLD73NCp4d0LTjfkJPGiwL6pLHPGHEhN1PojENPGdfgaS1/A8p9j3yW5GX
-vK/ydnLbxQ5rYfB6Oqc4pOih4sQG3U4ik/dN1hJ1L0+66aaToiHLp1qSAiH/KA
-K2Y5E6QFCBRiknBg4MNjdJnEvXTnGmBJTJCCGyBa4NPHCWOI+IHh8t8SLBlB06nN
-S5H3ORvYEBMsSUfPPE5UaRd2H3iqN8TN4ABhL4fhHTORiC6cXMgFXq0S4DrS8OB
-kASJIBJBEJHMFJ2f
+/PMWdYA5UXvl+TW2dE6pjYIT5LY/qQOD+qK+ihVqf94Lw7YZFAXK6sOoBJQ7Rnwy
+DfMAZiLIjWltNowRGLfTshxgtDj6AozO091GB94KPutdfMh8+7ArU6SSYmlRJQVh
+GkSBjCypQ5Yj36w6gZoOKcUcqeldHraenjAKOc7xiID7S13MMuyFYkMlNAJWJwGR
+tDtwKj9useiciAF9n9T521NtYJ2/LOdYq7hfRvzOxBsDPAnrSTFcaUaz4EcCAwEA
+AaNCMEAwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMCAQYwHQYDVR0OBBYE
+FDqahQcQZyi27/a9BUFuIMGU2g/eMA0GCSqGSIb3DQEBCwUAA4IBAQCZ21151fmX
+WWcDYfF+OwYxdS2hII5PZYe096acvNjpL9DbWu7PdIxztDhC2gV7+AJ1uP2lsdeu
+9tfeE8tTEH6KRtGX+rcuKxGrkLAngPnon1rpN5+r5N9ss4UXnT3ZJE95kTXWXwTr
+gIOrmgIttRD02JDHBHNA7XIloKmf7J6raBKZV8aPEjoJpL1E/QYVN8Gb5DKj7Tjo
+2GTzLH4U/ALqn83/B2gX2yKQOC16jdFU8WnjXzPKej17CuPKf1855eJ1usV2GDPO
+LPAvTK33sefOT6jEm0pUBsV/fdUID+Ic/n4XuKxe9tQWskMJDE32p2u0mYRlynqI
+4uJEvlz36hz1
 -----END CERTIFICATE-----
 "#;
+
+/// Validate that an inline PEM certificate base64-decodes into well-formed DER.
+/// Returns a clear Err (instead of letting openvpn die opaquely) if the body is
+/// truncated, mis-wrapped, or otherwise not valid base64 / not a DER SEQUENCE.
+/// Pure-Rust (no openssl dependency) so it runs on minimal hosts too.
+fn validate_inline_ca(pem: &str) -> Result<(), String> {
+    let body: String = pem
+        .lines()
+        .filter(|l| !l.starts_with("-----"))
+        .map(|l| l.trim())
+        .collect::<Vec<_>>()
+        .concat();
+    if body.is_empty() {
+        return Err("embedded OpenVPN CA certificate is empty".into());
+    }
+    let der = base64_decode(&body)
+        .map_err(|e| format!("embedded OpenVPN CA certificate is not valid base64: {e}"))?;
+    // A DER-encoded X.509 certificate is an ASN.1 SEQUENCE (tag 0x30) and the
+    // GoDaddy G2 root is ~965 bytes; reject anything obviously truncated.
+    if der.first() != Some(&0x30) {
+        return Err("embedded OpenVPN CA certificate is not a DER SEQUENCE (corrupted)".into());
+    }
+    if der.len() < 512 {
+        return Err(format!(
+            "embedded OpenVPN CA certificate is too short ({} bytes) — looks truncated",
+            der.len()
+        ));
+    }
+    Ok(())
+}
+
+/// Minimal standard-alphabet base64 decoder (RFC 4648), no external crates.
+/// Ignores ASCII whitespace; rejects invalid characters and bad padding.
+fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
+    fn val(c: u8) -> Option<u8> {
+        match c {
+            b'A'..=b'Z' => Some(c - b'A'),
+            b'a'..=b'z' => Some(c - b'a' + 26),
+            b'0'..=b'9' => Some(c - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+
+    let mut out = Vec::new();
+    let mut buf = 0u32;
+    let mut bits = 0u32;
+    let mut pad = 0u32;
+    for &c in input.as_bytes() {
+        if c.is_ascii_whitespace() {
+            continue;
+        }
+        if c == b'=' {
+            pad += 1;
+            continue;
+        }
+        if pad > 0 {
+            return Err("base64 data after padding".into());
+        }
+        let v = val(c).ok_or_else(|| format!("invalid base64 char '{}'", c as char))?;
+        buf = (buf << 6) | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+        }
+    }
+    if pad > 2 {
+        return Err("too much base64 padding".into());
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedded_ca_is_valid_der() {
+        // The shipped GoDaddy G2 root must decode to well-formed DER so the
+        // OpenVPN inline-<ca> fallback can authenticate the server.
+        validate_inline_ca(PRIVADO_CA_CERT).expect("embedded CA must base64-decode to valid DER");
+    }
+
+    #[test]
+    fn truncated_ca_is_rejected() {
+        let bad = "-----BEGIN CERTIFICATE-----\nkASJIBJBEJHMFJ2f\n-----END CERTIFICATE-----\n";
+        assert!(validate_inline_ca(bad).is_err());
+    }
+
+    #[test]
+    fn base64_roundtrip_basic() {
+        assert_eq!(base64_decode("aGVsbG8=").unwrap(), b"hello");
+        assert_eq!(base64_decode("Zm9vYmFy").unwrap(), b"foobar");
+        assert!(base64_decode("****").is_err());
+    }
+}

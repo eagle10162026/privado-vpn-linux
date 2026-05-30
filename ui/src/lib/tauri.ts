@@ -55,7 +55,7 @@ export async function vpnStatus(): Promise<VpnStatus> {
 
 export async function vpnGetConfig(): Promise<VpnConfig> {
   const r = await invoke('vpn_get_config');
-  return (r as VpnConfig) ?? { username: '', password: '', preferred_country: null, preferred_city: null, split_tunnel: false, split_domains: [], kill_switch: true, auto_connect: false, dns_servers: ['198.18.0.1', '198.18.0.2'], favorites: [], trusted_networks: [], protocol: 'ikev2', auto_reconnect: true };
+  return (r as VpnConfig) ?? { username: '', password: '', preferred_country: null, preferred_city: null, split_tunnel: false, split_domains: [], kill_switch: true, auto_connect: false, dns_servers: ['198.18.0.1', '198.18.0.2'], favorites: [], trusted_networks: [], protocol: 'ikev2', auto_reconnect: true, route_llm_browser: false, route_llm_tools: false, routing_rules: [] };
 }
 
 export async function vpnSaveConfig(config: VpnConfig): Promise<void> {
@@ -153,6 +153,18 @@ export interface VpnStatus {
   kill_switch_active: boolean;
 }
 
+export interface RoutingRule {
+  id: string;
+  enabled: boolean;
+  name: string;
+  match_type: 'process' | 'domain' | 'ip_cidr' | 'port' | 'port_range';
+  match_value: string;
+  protocol?: 'tcp' | 'udp' | null;
+  action: 'vpn' | 'direct';
+  exit_server?: string | null;
+  priority: number;
+}
+
 export interface VpnConfig {
   username: string; password: string; preferred_country: string | null;
   preferred_city: string | null; split_tunnel: boolean; split_domains: string[];
@@ -160,6 +172,7 @@ export interface VpnConfig {
   favorites: string[]; trusted_networks: string[]; protocol: string;
   auto_reconnect: boolean;
   route_llm_browser: boolean; route_llm_tools: boolean;
+  routing_rules: RoutingRule[];
 }
 
 export interface ConnectionRecord {
@@ -301,18 +314,59 @@ export async function vpnManageSubscription(): Promise<SubscriptionInfo | null> 
   } catch { return null; }
 }
 
-export async function vpnAddSplitProcess(uid: number): Promise<void> {
-  await invoke('vpn_add_split_process', { uid });
-}
+// ====== ROUTING RULES (daemon-backed) ======
+// These call the daemon's /routing/rules endpoints via Tauri so the GUI, CLI,
+// and LLM share one source of truth and the daemon re-applies rules live.
 
-export async function vpnRemoveSplitProcess(uid: number): Promise<void> {
-  await invoke('vpn_remove_split_process', { uid });
-}
-
-export async function vpnListSplitProcesses(): Promise<{ uid: number }[]> {
+export async function vpnListRoutingRules(): Promise<RoutingRule[]> {
   try {
-    return await invoke('vpn_list_split_processes') as { uid: number }[];
+    return await invoke('vpn_list_routing_rules') as RoutingRule[];
   } catch { return []; }
+}
+
+export async function vpnAddRoutingRule(rule: RoutingRule): Promise<{ ok: boolean; rules: RoutingRule[]; error?: string }> {
+  try {
+    const rules = await invoke('vpn_add_routing_rule', { rule }) as RoutingRule[];
+    return { ok: true, rules: rules ?? [] };
+  } catch (e) {
+    return { ok: false, rules: [], error: String(e) };
+  }
+}
+
+export async function vpnUpdateRoutingRule(rule: RoutingRule): Promise<{ ok: boolean; rules: RoutingRule[]; error?: string }> {
+  try {
+    const rules = await invoke('vpn_update_routing_rule', { rule }) as RoutingRule[];
+    return { ok: true, rules: rules ?? [] };
+  } catch (e) {
+    return { ok: false, rules: [], error: String(e) };
+  }
+}
+
+export async function vpnDeleteRoutingRule(id: string): Promise<{ ok: boolean; rules: RoutingRule[]; error?: string }> {
+  try {
+    const rules = await invoke('vpn_delete_routing_rule', { id }) as RoutingRule[];
+    return { ok: true, rules: rules ?? [] };
+  } catch (e) {
+    return { ok: false, rules: [], error: String(e) };
+  }
+}
+
+export async function vpnReorderRoutingRules(order: string[]): Promise<{ ok: boolean; rules: RoutingRule[]; error?: string }> {
+  try {
+    const rules = await invoke('vpn_reorder_routing_rules', { order }) as RoutingRule[];
+    return { ok: true, rules: rules ?? [] };
+  } catch (e) {
+    return { ok: false, rules: [], error: String(e) };
+  }
+}
+
+export async function vpnSetActiveExit(server: string): Promise<{ ok: boolean; server?: string; ip?: string; error?: string }> {
+  try {
+    const r = await invoke('vpn_set_active_exit', { server }) as Record<string, unknown>;
+    return { ok: true, server: r?.server as string, ip: r?.ip as string };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
 }
 
 export async function vpnSendNotification(title: string, body: string): Promise<void> {

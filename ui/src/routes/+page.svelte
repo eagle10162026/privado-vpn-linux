@@ -5,6 +5,7 @@
   import ControlTower from '$lib/components/ControlTower.svelte';
   import PhantomMode from '$lib/components/PhantomMode.svelte';
   import SettingsScreen from '$lib/components/SettingsScreen.svelte';
+  import RoutingScreen from '$lib/components/RoutingScreen.svelte';
   import AccountScreen from '$lib/components/AccountScreen.svelte';
   import SpeedTest from '$lib/components/SpeedTest.svelte';
   import ConnectionHistory from '$lib/components/ConnectionHistory.svelte';
@@ -15,10 +16,13 @@
     vpnRunSpeedTest, vpnGetSpeedResults, vpnToggleFavorite,
     vpnGetControlTower, vpnSaveControlTower, vpnAddSplitDomain,
     vpnRemoveSplitDomain, vpnCheckConnection, vpnReconnect,
+    vpnListRoutingRules, vpnAddRoutingRule, vpnUpdateRoutingRule,
+    vpnDeleteRoutingRule, vpnReorderRoutingRules, vpnSetActiveExit,
     type ServerEntry, type VpnConfig, type SpeedTestResult, type ControlTowerConfig,
+    type RoutingRule,
   } from '$lib/tauri';
 
-  type Tab = 'connect' | 'servers' | 'tower' | 'phantom' | 'settings' | 'account';
+  type Tab = 'connect' | 'servers' | 'tower' | 'phantom' | 'routing' | 'settings' | 'account';
   type SubScreen = 'speed' | 'history' | 'notifications' | null;
   type VpnState = 'disconnected' | 'connecting' | 'connected' | 'disconnecting' | 'reconnecting' | 'error';
 
@@ -73,6 +77,10 @@
 
   // Phantom mode state
   let phantomConfig = $state<Record<string, unknown>>({});
+
+  // Routing rules state (daemon-backed; the one source of truth across GUI/CLI/LLM).
+  let routingRules = $state<RoutingRule[]>([]);
+  let activeExit = $state('');
 
   // Notification config state
   let notifConfig = $state<Record<string, unknown>>({});
@@ -302,6 +310,46 @@
     }
   }
 
+  // === ROUTING RULES ===
+  async function loadRoutingRules() {
+    try {
+      routingRules = await vpnListRoutingRules();
+    } catch {
+      routingRules = [];
+    }
+  }
+
+  async function handleAddRule(rule: RoutingRule) {
+    const r = await vpnAddRoutingRule(rule);
+    if (r.ok) routingRules = r.rules;
+  }
+
+  async function handleUpdateRule(rule: RoutingRule) {
+    const r = await vpnUpdateRoutingRule(rule);
+    if (r.ok) routingRules = r.rules;
+  }
+
+  async function handleDeleteRule(id: string) {
+    const r = await vpnDeleteRoutingRule(id);
+    if (r.ok) routingRules = r.rules;
+  }
+
+  async function handleReorderRule(order: string[]) {
+    const r = await vpnReorderRoutingRules(order);
+    if (r.ok) routingRules = r.rules;
+  }
+
+  async function handleSetActiveExit(server: string) {
+    const r = await vpnSetActiveExit(server);
+    if (r.ok) {
+      activeExit = server;
+      vpnState = 'connected';
+      connectedServer = r.server ?? connectedServer;
+      connectedIP = r.ip ?? connectedIP;
+      if (!pollInterval) startPolling();
+    }
+  }
+
   // === NOTIFICATIONS ===
   async function handleNotifSave(config: unknown) {
     notifConfig = config as Record<string, unknown>;
@@ -324,6 +372,7 @@
           connectedServer = status.server ?? connectedServer;
           connectedIP = status.ip ?? connectedIP;
           killSwitchActive = status.kill_switch_active;
+          if (status.server) activeExit = status.server;
           if (!pollInterval) startPolling();
         }
       } else if (status.state === 'Disconnected' && vpnState === 'connected') {
@@ -334,6 +383,11 @@
         stopPolling();
       }
     } catch { /* not in Tauri / daemon unreachable */ }
+
+    // Reflect rule changes made by the CLI/LLM, but don't clobber an open editor.
+    if (tab !== 'routing') {
+      await loadRoutingRules();
+    }
 
     // Don't overwrite settings the user is actively editing.
     if (tab === 'settings') return;
@@ -363,6 +417,7 @@
         vpnState = 'connected';
         connectedServer = status.server ?? '';
         connectedIP = status.ip ?? '';
+        activeExit = status.server ?? '';
         durationSecs = status.duration_secs;
         bytesSent = status.bytes_sent;
         bytesRecv = status.bytes_recv;
@@ -394,6 +449,9 @@
       } catch {}
       try { speedHistory = (await vpnGetSpeedResults()).map(toSpeedRow); } catch {}
     }
+
+    // Load routing rules (daemon-backed) so the Routing tab is ready.
+    await loadRoutingRules();
 
     if (!loggedIn) tab = 'account';
 
@@ -480,6 +538,18 @@
         config={{ mode: splitTunnel ? 'split' : 'full', domains: splitDomains }}
         onSave={handlePhantomSave}
       />
+    {:else if tab === 'routing'}
+      <RoutingScreen
+        rules={routingRules}
+        {servers}
+        {activeExit}
+        connectionState={vpnState === 'connected' ? 'Connected' : 'Disconnected'}
+        onAddRule={handleAddRule}
+        onUpdateRule={handleUpdateRule}
+        onDeleteRule={handleDeleteRule}
+        onReorderRule={handleReorderRule}
+        onSetActiveExit={handleSetActiveExit}
+      />
     {:else if tab === 'settings'}
       <SettingsScreen
         {killSwitch}
@@ -542,6 +612,12 @@
         <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10c1.85 0 3.58-.5 5.07-1.37"/><path d="M17 8l4 4-4 4"/><path d="M21 12H9"/>
       </svg>
       <span class="tab-label">Phantom</span>
+    </button>
+    <button class="tab-item" class:active={tab === 'routing'} onclick={() => goTo('routing')}>
+      <svg class="tab-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="6" cy="19" r="3"/><circle cx="6" cy="5" r="3"/><circle cx="18" cy="12" r="3"/><path d="M6 8v3a3 3 0 0 0 3 3h6M6 16v-1"/>
+      </svg>
+      <span class="tab-label">Routing</span>
     </button>
     <button class="tab-item" class:active={tab === 'settings' && !sub} onclick={() => goTo('settings')}>
       <svg class="tab-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

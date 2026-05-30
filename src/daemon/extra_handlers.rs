@@ -99,7 +99,11 @@ pub async fn handle_reconnect(
     }
 
     let country_code = derive_country_from_host(&body.server_host);
-    state.write().await.authorize(country_code);
+    {
+        let mut st = state.write().await;
+        st.authorize(country_code);
+        st.current_server = Some(body.server_host.clone());
+    }
 
     // Initiate new connection.
     if let Err(e) = swanctl::initiate_dynamic().await {
@@ -109,13 +113,17 @@ pub async fn handle_reconnect(
         }));
     }
 
-    // Reinstall routing for new server.
-    let server_host_owned = body.server_host.clone();
+    // Reinstall routing for new server. Resolve + persist the endpoint IPs (R5)
+    // so a later disconnect tears down exactly these mangle MARK rules, then
+    // re-apply the routing-rule engine for the new exit.
     let split_domains = cfg.split_domains.clone();
     let dns_c = dns.clone();
+    let cfg_for_rules = cfg.clone();
+    let remote_ips = crate::routing::resolve_domain_ips(std::slice::from_ref(&body.server_host));
+    state.write().await.current_remote_ips = remote_ips.clone();
     tokio::task::spawn_blocking(move || {
-        let remote_ips = crate::routing::resolve_domain_ips(&[server_host_owned]);
         crate::routing::on_connect(&remote_ips, &dns_c, kill_switch, &split_domains);
+        crate::daemon::routing_rules::apply_routing_rules(&cfg_for_rules);
     });
 
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -156,10 +164,14 @@ pub async fn handle_pause(
         }));
     }
 
-    // Terminate SA and remove routing while paused.
+    // Terminate SA and remove routing while paused. Tear down exactly the
+    // endpoint mangle MARK rules captured at connect time (R5) plus the rule
+    // engine's nft table.
+    let paused_remote_ips = state.read().await.current_remote_ips.clone();
     swanctl::terminate_all_privado().await;
-    let _ = tokio::task::spawn_blocking(|| {
-        crate::routing::on_disconnect(&[]);
+    let _ = tokio::task::spawn_blocking(move || {
+        crate::routing::on_disconnect(&paused_remote_ips);
+        crate::daemon::routing_rules::clear_routing_rules();
     }).await;
 
     // Record the pause in daemon state so other paths (trusted-network
@@ -207,7 +219,11 @@ pub async fn handle_pause(
         }
 
         let cc = derive_country_from_host(&server_host);
-        pause_state.write().await.authorize(cc);
+        {
+            let mut st = pause_state.write().await;
+            st.authorize(cc);
+            st.current_server = Some(server_host.clone());
+        }
 
         if swanctl::initiate_dynamic().await.is_err() {
             pause_state.write().await.revoke();
@@ -217,10 +233,12 @@ pub async fn handle_pause(
         let dns = cfg.dns_servers.clone();
         let ks = cfg.kill_switch;
         let sd = cfg.split_domains.clone();
-        let sh = server_host;
+        let cfg_for_rules = cfg.clone();
+        let ips = crate::routing::resolve_domain_ips(std::slice::from_ref(&server_host));
+        pause_state.write().await.current_remote_ips = ips.clone();
         tokio::task::spawn_blocking(move || {
-            let ips = crate::routing::resolve_domain_ips(&[sh]);
             crate::routing::on_connect(&ips, &dns, ks, &sd);
+            crate::daemon::routing_rules::apply_routing_rules(&cfg_for_rules);
         });
 
         info!("[pause] VPN resumed");

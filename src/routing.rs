@@ -128,38 +128,54 @@ pub fn remove_killswitch() -> Result<(), String> {
 
 // ─── Policy routing (ip rule + ip route) ───────────────────────────────────
 
-/// Detect the primary WiFi interface (wlp* or wlan*).
-fn detect_wifi_interface() -> Option<String> {
+/// Detect the egress interface + gateway that owns the current default route.
+///
+/// Parses the first `default via <gw> dev <iface>` line from
+/// `ip route show default`. This is name-agnostic, so it works on Ethernet
+/// (enp*/eth*) hosts just as well as WiFi (wl*) — the previous wl*-only matcher
+/// silently skipped policy routing entirely on this box's 10G/2.5G wired links,
+/// leaving the encrypted ESP packets to whatever the main table picked.
+///
+/// Returns `(iface, gateway)`. Falls back to scanning link names (wl*, en*,
+/// eth*) for an interface only when no default route is present (gateway None).
+fn detect_default_egress_iface() -> Option<(String, Option<String>)> {
     let output = Command::new("ip")
-        .args(["-o", "link", "show"])
+        .args(["route", "show", "default"])
         .output()
         .ok()?;
     let text = String::from_utf8_lossy(&output.stdout);
     for line in text.lines() {
-        // Format: "2: wlp6s0: <BROADCAST,...>"
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.first() != Some(&"default") {
+            continue;
+        }
+        let mut gw = None;
+        let mut dev = None;
+        let mut i = 0;
+        while i + 1 < parts.len() {
+            match parts[i] {
+                "via" => gw = Some(parts[i + 1].to_string()),
+                "dev" => dev = Some(parts[i + 1].to_string()),
+                _ => {}
+            }
+            i += 1;
+        }
+        if let Some(iface) = dev {
+            return Some((iface, gw));
+        }
+    }
+
+    // No default route — fall back to scanning link names.
+    let links = Command::new("ip").args(["-o", "link", "show"]).output().ok()?;
+    let ltext = String::from_utf8_lossy(&links.stdout);
+    for line in ltext.lines() {
+        // Format: "2: wlp6s0: <BROADCAST,...>" / "2: enp18s0: <...>"
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() >= 2 {
             let iface = parts[1].trim_end_matches(':');
-            if iface.starts_with("wl") {
-                return Some(iface.to_string());
+            if iface.starts_with("wl") || iface.starts_with("en") || iface.starts_with("eth") {
+                return Some((iface.to_string(), None));
             }
-        }
-    }
-    None
-}
-
-/// Get the default gateway for a given interface from the main routing table.
-fn get_gateway_for_iface(iface: &str) -> Option<String> {
-    let output = Command::new("ip")
-        .args(["route", "show", "default", "dev", iface])
-        .output()
-        .ok()?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    // "default via 192.168.0.1 dev wlp6s0 ..."
-    for line in text.lines() {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 3 && parts[0] == "default" && parts[1] == "via" {
-            return Some(parts[2].to_string());
         }
     }
     None
@@ -176,21 +192,20 @@ fn get_gateway_for_iface(iface: &str) -> Option<String> {
 /// This ensures the VPN tunnel always goes out over WiFi even if there's
 /// a wired interface or other default route.
 pub fn install_policy_routing(vpn_remote_ips: &[String]) -> Result<(), String> {
-    let wifi = detect_wifi_interface()
-        .ok_or_else(|| "no WiFi interface found (wl*)".to_string())?;
-    let gw = get_gateway_for_iface(&wifi)
-        .ok_or_else(|| format!("no default gateway on {wifi}"))?;
+    let (iface, gw) = detect_default_egress_iface()
+        .ok_or_else(|| "no egress interface found (no default route, no wl*/en*/eth* link)".to_string())?;
+    let gw = gw.ok_or_else(|| format!("no default gateway on {iface}"))?;
 
-    info!("[policy-route] WiFi={wifi}, gateway={gw}, table={VPN_TABLE}, fwmark=0x{VPN_FWMARK:x}");
+    info!("[policy-route] egress={iface}, gateway={gw}, table={VPN_TABLE}, fwmark=0x{VPN_FWMARK:x}");
 
     // Clean up any stale rules/routes from a previous run.
     let _ = run_cmd("ip", &["rule", "del", "fwmark", &format!("0x{VPN_FWMARK:x}"), "table", &VPN_TABLE.to_string()]);
     let _ = run_cmd("ip", &["route", "flush", "table", &VPN_TABLE.to_string()]);
 
-    // Add the policy route table: default via WiFi gateway.
+    // Add the policy route table: default via the egress gateway.
     run_cmd("ip", &[
         "route", "add", "default",
-        "via", &gw, "dev", &wifi,
+        "via", &gw, "dev", &iface,
         "table", &VPN_TABLE.to_string(),
     ])?;
 

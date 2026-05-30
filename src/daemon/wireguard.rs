@@ -456,7 +456,7 @@ fn parse_wg_time(s: &str) -> u64 {
     let mut total: u64 = 0;
     let mut current_num: u64 = 0;
 
-    for part in s.split(|c: char| c == ',' || c == ' ') {
+    for part in s.split([',', ' ']) {
         let part = part.trim();
         if part.is_empty() { continue; }
 

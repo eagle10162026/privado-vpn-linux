@@ -1,4 +1,4 @@
-use axum::{extract::State, http::StatusCode, routing::{get, post}, Json, Router};
+use axum::{extract::{Path, State}, http::StatusCode, routing::{get, post}, Json, Router};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tracing::{info, error};
@@ -25,6 +25,12 @@ pub async fn run_http_api(state: SharedState) -> Result<(), String> {
         .route("/pause", post(handle_pause))
         .route("/config", get(handle_get_config))
         .route("/config", post(handle_set_config))
+        .route("/routing/rules", get(handle_list_rules))
+        .route("/routing/rules", post(handle_add_rule))
+        .route("/routing/rules/{id}", post(handle_update_rule))
+        .route("/routing/rules/{id}/delete", post(handle_delete_rule))
+        .route("/routing/rules/reorder", post(handle_reorder_rules))
+        .route("/routing/apply", post(handle_apply_rules))
         .with_state(state.clone());
 
     let addr: SocketAddr = format!("{API_ADDR}:{API_PORT}")
@@ -261,10 +267,12 @@ async fn handle_connect(
                 if wg_connected {
                     let dns_for_routing = dns.clone();
                     let split_domains = cfg.split_domains.clone();
-                    let sh = server_host.clone();
+                    let cfg_for_rules = cfg.clone();
+                    let remote_ips = crate::routing::resolve_domain_ips(std::slice::from_ref(&server_host));
+                    state.write().await.current_remote_ips = remote_ips.clone();
                     tokio::task::spawn_blocking(move || {
-                        let remote_ips = crate::routing::resolve_domain_ips(&[sh]);
                         crate::routing::on_connect(&remote_ips, &dns_for_routing, kill_switch, &split_domains);
+                        crate::daemon::routing_rules::apply_routing_rules(&cfg_for_rules);
                     });
 
                     tokio::time::sleep(Duration::from_millis(700)).await;
@@ -306,9 +314,12 @@ async fn handle_connect(
 
                     let dns_for_routing = dns.clone();
                     let split_domains = cfg.split_domains.clone();
+                    let cfg_for_rules = cfg.clone();
+                    let remote_ips = crate::routing::resolve_domain_ips(std::slice::from_ref(&server_host));
+                    state.write().await.current_remote_ips = remote_ips.clone();
                     tokio::task::spawn_blocking(move || {
-                        let remote_ips = crate::routing::resolve_domain_ips(&[server_host]);
                         crate::routing::on_connect(&remote_ips, &dns_for_routing, kill_switch, &split_domains);
+                        crate::daemon::routing_rules::apply_routing_rules(&cfg_for_rules);
                     });
 
                     tokio::time::sleep(Duration::from_millis(700)).await;
@@ -340,19 +351,23 @@ async fn handle_connect(
         st.current_server = Some(server_host.clone());
     }
 
-    // Install routing (policy routes + DNS override + kill switch) in background.
+    // Resolve the remote endpoint IPs up front and persist them in daemon state
+    // so disconnect can tear down the exact mangle MARK rules these created
+    // (R5). Then install routing (policy routes + DNS override + rule engine +
+    // kill switch) in the background.
+    let remote_ips = crate::routing::resolve_domain_ips(std::slice::from_ref(&server_host));
+    state.write().await.current_remote_ips = remote_ips.clone();
     let dns_for_routing = dns.clone();
     let split_domains = cfg.split_domains.clone();
+    let cfg_for_rules = cfg.clone();
     tokio::task::spawn_blocking(move || {
-        let remote_ips = crate::routing::resolve_domain_ips(
-            &[server_host.clone()],
-        );
         crate::routing::on_connect(
             &remote_ips,
             &dns_for_routing,
             kill_switch,
             &split_domains,
         );
+        crate::daemon::routing_rules::apply_routing_rules(&cfg_for_rules);
     });
 
     tokio::time::sleep(Duration::from_millis(700)).await;
@@ -380,11 +395,20 @@ async fn handle_disconnect(
             message: "PIN rejected".into(),
         }));
     }
-    state.write().await.revoke();
+    // Capture the resolved endpoint IPs BEFORE revoke() clears them, so the
+    // per-IP mangle MARK rules installed at connect time are actually removed
+    // (R5) instead of leaking after disconnect.
+    let remote_ips = {
+        let mut st = state.write().await;
+        let ips = st.current_remote_ips.clone();
+        st.revoke();
+        ips
+    };
 
-    // Remove routing before terminating SAs.
-    let _ = tokio::task::spawn_blocking(|| {
-        crate::routing::on_disconnect(&[]);
+    // Remove routing (including the rule engine's nft table) before terminating SAs.
+    let _ = tokio::task::spawn_blocking(move || {
+        crate::routing::on_disconnect(&remote_ips);
+        crate::daemon::routing_rules::clear_routing_rules();
     }).await;
 
     swanctl::terminate_all_privado().await;
@@ -410,6 +434,7 @@ async fn handle_get_config() -> Json<serde_json::Value> {
         "protocol": cfg.protocol,
         "route_llm_browser": cfg.route_llm_browser,
         "route_llm_tools": cfg.route_llm_tools,
+        "routing_rules": cfg.routing_rules,
     }))
 }
 
@@ -426,6 +451,7 @@ struct SetConfigReq {
     #[serde(default)] protocol: Option<String>,
     #[serde(default)] route_llm_browser: Option<bool>,
     #[serde(default)] route_llm_tools: Option<bool>,
+    #[serde(default)] routing_rules: Option<Vec<crate::config::RoutingRule>>,
 }
 
 async fn handle_set_config(Json(body): Json<SetConfigReq>) -> (StatusCode, Json<serde_json::Value>) {
@@ -433,6 +459,11 @@ async fn handle_set_config(Json(body): Json<SetConfigReq>) -> (StatusCode, Json<
     // Capture a kill-switch toggle (Copy) before applying so we can act on it
     // after the save regardless of order.
     let kill_switch_change = body.kill_switch;
+    // Track whether any routing-relevant field changed so we can live-re-apply
+    // the rule engine, mirroring the kill_switch live-apply block.
+    let routing_changed = body.routing_rules.is_some()
+        || body.route_llm_browser.is_some()
+        || body.route_llm_tools.is_some();
     if let Some(v) = body.preferred_country { cfg.preferred_country = Some(v); }
     if let Some(v) = body.preferred_city { cfg.preferred_city = Some(v); }
     if let Some(v) = body.kill_switch { cfg.kill_switch = v; }
@@ -444,6 +475,7 @@ async fn handle_set_config(Json(body): Json<SetConfigReq>) -> (StatusCode, Json<
     if let Some(v) = body.protocol { cfg.protocol = v; }
     if let Some(v) = body.route_llm_browser { cfg.route_llm_browser = v; }
     if let Some(v) = body.route_llm_tools { cfg.route_llm_tools = v; }
+    if let Some(v) = body.routing_rules { cfg.routing_rules = v; }
     match crate::config::save_config(&cfg) {
         Ok(_) => {
             // #2: apply a kill-switch toggle to routing LIVE when the VPN is
@@ -461,10 +493,176 @@ async fn handle_set_config(Json(body): Json<SetConfigReq>) -> (StatusCode, Json<
                     });
                 }
             }
+            // Mirror the kill_switch live-apply for the routing-rule engine:
+            // re-derive and re-apply the nft table when connected so rule edits
+            // (or route_llm_* toggles) take effect immediately.
+            if routing_changed && crate::daemon::swanctl::live_status().await.connected {
+                let cfg_for_rules = cfg.clone();
+                tokio::task::spawn_blocking(move || {
+                    crate::daemon::routing_rules::apply_routing_rules(&cfg_for_rules);
+                });
+            }
             (StatusCode::OK, Json(serde_json::json!({"ok": true})))
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e}))),
     }
+}
+
+// ─── Routing-rule CRUD endpoints ────────────────────────────────────────────
+//
+// All mutations are pin-gated like /connect. Each persists the config then
+// live-re-applies the rule engine if the VPN is currently connected, so a rule
+// change from the GUI/CLI/LLM takes effect immediately.
+
+/// Persist `cfg.routing_rules` and re-apply the engine live when connected.
+async fn persist_and_reapply(cfg: &crate::config::Config) -> Result<(), String> {
+    crate::config::save_config(cfg)?;
+    if crate::daemon::swanctl::live_status().await.connected {
+        let cfg_for_rules = cfg.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::daemon::routing_rules::apply_routing_rules(&cfg_for_rules);
+        });
+    }
+    Ok(())
+}
+
+fn rules_ok(cfg: &crate::config::Config) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "ok": true, "rules": cfg.routing_rules }))
+}
+
+fn save_err(e: String) -> (StatusCode, Json<serde_json::Value>) {
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e })))
+}
+
+fn bad_pin() -> (StatusCode, Json<serde_json::Value>) {
+    (StatusCode::FORBIDDEN, Json(serde_json::json!({ "error": "PIN rejected" })))
+}
+
+async fn handle_list_rules() -> Json<serde_json::Value> {
+    // Run the one-shot legacy migration lazily so the first read reflects any
+    // pre-existing split_domains config even if the daemon predates migration.
+    let mut cfg = crate::config::load_config().unwrap_or_default();
+    if crate::config::migrate_split_domains_to_rules(&mut cfg) {
+        let _ = crate::config::save_config(&cfg);
+    }
+    Json(serde_json::json!({ "rules": cfg.routing_rules }))
+}
+
+#[derive(serde::Deserialize)]
+struct AddRuleReq {
+    pin: String,
+    rule: crate::config::RoutingRule,
+}
+
+async fn handle_add_rule(Json(body): Json<AddRuleReq>) -> (StatusCode, Json<serde_json::Value>) {
+    if body.pin != vpn_pin() { return bad_pin(); }
+    let mut cfg = crate::config::load_config().unwrap_or_default();
+    let mut rule = body.rule;
+    if rule.id.trim().is_empty() {
+        rule.id = crate::config::gen_id();
+    }
+    // Append at the end; priority follows array order (highest existing + 1).
+    let next_priority = cfg.routing_rules.iter().map(|r| r.priority).max().map(|m| m + 1).unwrap_or(0);
+    if rule.priority == 0 {
+        rule.priority = next_priority;
+    }
+    cfg.routing_rules.push(rule);
+    match persist_and_reapply(&cfg).await {
+        Ok(_) => (StatusCode::OK, rules_ok(&cfg)),
+        Err(e) => save_err(e),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct UpdateRuleReq {
+    pin: String,
+    rule: crate::config::RoutingRule,
+}
+
+async fn handle_update_rule(
+    Path(id): Path<String>,
+    Json(body): Json<UpdateRuleReq>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if body.pin != vpn_pin() { return bad_pin(); }
+    let mut cfg = crate::config::load_config().unwrap_or_default();
+    match cfg.routing_rules.iter_mut().find(|r| r.id == id) {
+        Some(slot) => {
+            let mut updated = body.rule;
+            // Keep the path id authoritative.
+            updated.id = id.clone();
+            *slot = updated;
+        }
+        None => {
+            return (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "rule not found" })));
+        }
+    }
+    match persist_and_reapply(&cfg).await {
+        Ok(_) => (StatusCode::OK, rules_ok(&cfg)),
+        Err(e) => save_err(e),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct PinOnlyReq {
+    pin: String,
+}
+
+async fn handle_delete_rule(
+    Path(id): Path<String>,
+    Json(body): Json<PinOnlyReq>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if body.pin != vpn_pin() { return bad_pin(); }
+    let mut cfg = crate::config::load_config().unwrap_or_default();
+    let before = cfg.routing_rules.len();
+    cfg.routing_rules.retain(|r| r.id != id);
+    if cfg.routing_rules.len() == before {
+        return (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "rule not found" })));
+    }
+    match persist_and_reapply(&cfg).await {
+        Ok(_) => (StatusCode::OK, rules_ok(&cfg)),
+        Err(e) => save_err(e),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct ReorderReq {
+    pin: String,
+    order: Vec<String>,
+}
+
+async fn handle_reorder_rules(Json(body): Json<ReorderReq>) -> (StatusCode, Json<serde_json::Value>) {
+    if body.pin != vpn_pin() { return bad_pin(); }
+    let mut cfg = crate::config::load_config().unwrap_or_default();
+    // Reorder rules by the provided id sequence, assigning priorities in steps
+    // of 10. Any rule not named in `order` keeps its relative position after.
+    let mut reordered: Vec<crate::config::RoutingRule> = Vec::with_capacity(cfg.routing_rules.len());
+    for id in &body.order {
+        if let Some(pos) = cfg.routing_rules.iter().position(|r| &r.id == id) {
+            reordered.push(cfg.routing_rules.remove(pos));
+        }
+    }
+    reordered.append(&mut cfg.routing_rules);
+    for (i, r) in reordered.iter_mut().enumerate() {
+        r.priority = (i as u32) * 10;
+    }
+    cfg.routing_rules = reordered;
+    match persist_and_reapply(&cfg).await {
+        Ok(_) => (StatusCode::OK, rules_ok(&cfg)),
+        Err(e) => save_err(e),
+    }
+}
+
+async fn handle_apply_rules(Json(body): Json<PinOnlyReq>) -> (StatusCode, Json<serde_json::Value>) {
+    if body.pin != vpn_pin() { return bad_pin(); }
+    let cfg = crate::config::load_config().unwrap_or_default();
+    let connected = crate::daemon::swanctl::live_status().await.connected;
+    if connected {
+        let cfg_for_rules = cfg.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::daemon::routing_rules::apply_routing_rules(&cfg_for_rules);
+        });
+    }
+    (StatusCode::OK, Json(serde_json::json!({ "ok": true, "applied": connected, "rules": cfg.routing_rules })))
 }
 
 #[derive(serde::Serialize)]

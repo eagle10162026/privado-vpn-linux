@@ -20,11 +20,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::State;
 
 pub(crate) const API_KEY: &str = "9f994c466340e8f2ed60a99396fecb6a";
-/// Portal API endpoints observed via network traffic analysis of the official
-/// app (subscriber performing normal authorized use). These are the app's
-/// backend REST API hosts — NOT VPN tunnel endpoints. Equivalent to knowing
-/// that Spotify's API lives at api.spotify.com. The actual VPN server list is
-/// fetched dynamically from these endpoints at runtime using valid credentials.
 const API_SERVERS: &[&str] = &[
     "f3556fm3o524m9.com",
     "3nkh5crxol.ch:15748",
@@ -44,6 +39,55 @@ pub(crate) const VPN_PIN: &str = "1234";
 
 const API_TIMEOUT_SECS: u64 = 20;
 const SPEED_TIMEOUT_SECS: u64 = 60;
+
+/// Match type for a routing rule. Mirrors the daemon's `RuleMatchType`
+/// (src/config.rs) — serde snake_case so GUI/CLI/daemon agree on the wire.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleMatchType {
+    Process,
+    Domain,
+    IpCidr,
+    Port,
+    PortRange,
+}
+
+/// Action for a routing rule. Mirrors the daemon's `RuleAction`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleAction {
+    Vpn,
+    Direct,
+}
+
+/// A single traffic-routing rule. Mirrors the daemon's `RoutingRule`
+/// (src/config.rs) field-for-field so the GUI, CLI, and LLM share one shape.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutingRule {
+    /// uuid-ish; daemon generates if empty on add.
+    pub id: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    pub name: String,
+    pub match_type: RuleMatchType,
+    /// process: comm/exe path or uid; domain: fqdn; ip_cidr: "1.2.3.0/24";
+    /// port: "443"; port_range: "8000-8100".
+    pub match_value: String,
+    /// "tcp"|"udp"|None=both, only meaningful for port/port_range.
+    #[serde(default)]
+    pub protocol: Option<String>,
+    pub action: RuleAction,
+    /// server hostname OR "cc:us"/"city:..." selector; None = current active tunnel.
+    #[serde(default)]
+    pub exit_server: Option<String>,
+    /// lower = evaluated first; daemon keeps array order == priority order.
+    #[serde(default)]
+    pub priority: u32,
+}
+
+fn default_true() -> bool {
+    true
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VpnConfig {
@@ -67,6 +111,9 @@ pub struct VpnConfig {
     /// Route LLM tool network traffic through VPN when connected + toggle on.
     #[serde(default)]
     pub route_llm_tools: bool,
+    /// Traffic-routing rules; authoritative copy lives in the daemon's config.
+    #[serde(default)]
+    pub routing_rules: Vec<RoutingRule>,
 }
 
 impl Default for VpnConfig {
@@ -87,6 +134,7 @@ impl Default for VpnConfig {
             auto_reconnect: true,
             route_llm_browser: false,
             route_llm_tools: false,
+            routing_rules: Vec::new(),
         }
     }
 }
@@ -820,19 +868,213 @@ async fn vpn_status(state: State<'_, AppState>) -> Result<serde_json::Value, Str
 
 #[tauri::command]
 async fn vpn_get_config(state: State<'_, AppState>) -> Result<VpnConfig, String> {
-    let mut cfg = state.config.lock().unwrap().clone();
-    cfg.password = String::new();
-    Ok(cfg)
+    // R3: the daemon's config.json is the single source of truth shared by the
+    // GUI, CLI, and LLM. Read it through the daemon so a setting changed by the
+    // CLI/LLM surfaces here. The local AppState copy is kept only as a cache and
+    // as the source of GUI-only fields the daemon does not persist (favorites,
+    // auto_reconnect, and the password which lives in credentials.json).
+    let daemon_cfg = daemon_get(&state.daemon_http, "/config").await;
+
+    let mut cfg = state.config.lock().unwrap();
+    if let Ok(v) = daemon_cfg {
+        if let Some(u) = v["username"].as_str() {
+            if !u.is_empty() {
+                cfg.username = u.to_string();
+            }
+        }
+        cfg.preferred_country = v["preferred_country"].as_str().map(|s| s.to_string());
+        cfg.preferred_city = v["preferred_city"].as_str().map(|s| s.to_string());
+        if let Some(b) = v["split_tunnel"].as_bool() { cfg.split_tunnel = b; }
+        if let Some(arr) = v["split_domains"].as_array() {
+            cfg.split_domains = arr.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect();
+        }
+        if let Some(b) = v["kill_switch"].as_bool() { cfg.kill_switch = b; }
+        if let Some(b) = v["auto_connect"].as_bool() { cfg.auto_connect = b; }
+        if let Some(arr) = v["dns_servers"].as_array() {
+            cfg.dns_servers = arr.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect();
+        }
+        if let Some(arr) = v["trusted_networks"].as_array() {
+            cfg.trusted_networks = arr.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect();
+        }
+        if let Some(p) = v["protocol"].as_str() { cfg.protocol = p.to_string(); }
+        if let Some(b) = v["route_llm_browser"].as_bool() { cfg.route_llm_browser = b; }
+        if let Some(b) = v["route_llm_tools"].as_bool() { cfg.route_llm_tools = b; }
+        if let Some(arr) = v["routing_rules"].as_array() {
+            if let Ok(rules) = serde_json::from_value::<Vec<RoutingRule>>(serde_json::Value::Array(arr.clone())) {
+                cfg.routing_rules = rules;
+            }
+        }
+        // Persist the refreshed daemon truth into the local cache on disk so the
+        // GUI-only fields stay alongside it.
+        save_config_to_disk(&cfg);
+    }
+    // Never expose the password to the frontend.
+    let mut out = cfg.clone();
+    out.password = String::new();
+    Ok(out)
 }
 
 #[tauri::command]
 async fn vpn_save_config(config: VpnConfig, state: State<'_, AppState>) -> Result<(), String> {
-    let mut current = state.config.lock().unwrap();
-    let password = current.password.clone();
-    *current = config;
-    if current.password.is_empty() { current.password = password; }
-    save_config_to_disk(&current);
-    Ok(())
+    // R3: push the change through the daemon's POST /config so the daemon is the
+    // single source of truth and its live-apply (kill_switch today, routing_rules
+    // tomorrow) fires immediately. Then mirror into the local cache/disk so
+    // GUI-only fields (favorites, auto_reconnect, password) are retained.
+    let body = serde_json::json!({
+        "pin": VPN_PIN,
+        "preferred_country": config.preferred_country,
+        "preferred_city": config.preferred_city,
+        "kill_switch": config.kill_switch,
+        "auto_connect": config.auto_connect,
+        "split_tunnel": config.split_tunnel,
+        "split_domains": config.split_domains,
+        "dns_servers": config.dns_servers,
+        "trusted_networks": config.trusted_networks,
+        "protocol": config.protocol,
+        "route_llm_browser": config.route_llm_browser,
+        "route_llm_tools": config.route_llm_tools,
+        "routing_rules": config.routing_rules,
+    });
+    let daemon_result = daemon_post(&state.daemon_http, "/config", &body).await;
+
+    // Update the local cache regardless so GUI-only fields persist; preserve the
+    // password (which never round-trips through the daemon).
+    {
+        let mut current = state.config.lock().unwrap();
+        let password = current.password.clone();
+        *current = config;
+        if current.password.is_empty() { current.password = password; }
+        save_config_to_disk(&current);
+    }
+
+    // Surface a daemon error (e.g. daemon down) so the user knows the live-apply
+    // did not happen, while the local cache still reflects their intent.
+    daemon_result.map(|_| ())
+}
+
+// ====== ROUTING RULES (daemon-backed) ======
+//
+// These commands talk DIRECTLY to the daemon's /routing/rules endpoints
+// (NOT the local Tauri config copy), so the GUI, CLI, and LLM share one source
+// of truth and the daemon re-applies rules live when connected. This is the
+// deliberate "daemon-first" pattern called out in the audit (R3/R6).
+
+/// List all routing rules from the daemon.
+#[tauri::command]
+async fn vpn_list_routing_rules(state: State<'_, AppState>) -> Result<Vec<RoutingRule>, String> {
+    let v = daemon_get(&state.daemon_http, "/routing/rules").await?;
+    let rules = v["rules"].clone();
+    let rules: Vec<RoutingRule> = serde_json::from_value(rules)
+        .map_err(|e| format!("Parse routing rules: {e}"))?;
+    Ok(rules)
+}
+
+/// Add a routing rule; the daemon assigns id/priority if empty and re-applies live.
+#[tauri::command]
+async fn vpn_add_routing_rule(rule: RoutingRule, state: State<'_, AppState>) -> Result<Vec<RoutingRule>, String> {
+    let body = serde_json::json!({ "pin": VPN_PIN, "rule": rule });
+    let v = daemon_post(&state.daemon_http, "/routing/rules", &body).await?;
+    let rules: Vec<RoutingRule> = serde_json::from_value(v["rules"].clone())
+        .map_err(|e| format!("Parse routing rules: {e}"))?;
+    Ok(rules)
+}
+
+/// Replace a routing rule by id; the daemon re-applies live.
+#[tauri::command]
+async fn vpn_update_routing_rule(rule: RoutingRule, state: State<'_, AppState>) -> Result<Vec<RoutingRule>, String> {
+    let path = format!("/routing/rules/{}", rule.id);
+    let body = serde_json::json!({ "pin": VPN_PIN, "rule": rule });
+    let v = daemon_post(&state.daemon_http, &path, &body).await?;
+    let rules: Vec<RoutingRule> = serde_json::from_value(v["rules"].clone())
+        .map_err(|e| format!("Parse routing rules: {e}"))?;
+    Ok(rules)
+}
+
+/// Delete a routing rule by id; the daemon re-applies live.
+#[tauri::command]
+async fn vpn_delete_routing_rule(id: String, state: State<'_, AppState>) -> Result<Vec<RoutingRule>, String> {
+    let path = format!("/routing/rules/{id}/delete");
+    let body = serde_json::json!({ "pin": VPN_PIN });
+    let v = daemon_post(&state.daemon_http, &path, &body).await?;
+    let rules: Vec<RoutingRule> = serde_json::from_value(v["rules"].clone())
+        .map_err(|e| format!("Parse routing rules: {e}"))?;
+    Ok(rules)
+}
+
+/// Reorder routing rules; `order` is the new id sequence (priority ascending).
+#[tauri::command]
+async fn vpn_reorder_routing_rules(order: Vec<String>, state: State<'_, AppState>) -> Result<Vec<RoutingRule>, String> {
+    let body = serde_json::json!({ "pin": VPN_PIN, "order": order });
+    let v = daemon_post(&state.daemon_http, "/routing/rules/reorder", &body).await?;
+    let rules: Vec<RoutingRule> = serde_json::from_value(v["rules"].clone())
+        .map_err(|e| format!("Parse routing rules: {e}"))?;
+    Ok(rules)
+}
+
+/// Set the single active exit tunnel (v1 single-active-tunnel model). Resolves a
+/// "cc:xx"/"city:..." selector or bare country code to the lowest-load server,
+/// then reconnects the one tunnel to that exit while the daemon preserves rules.
+#[tauri::command]
+async fn vpn_set_active_exit(server: String, state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    // Resolve the requested exit into a concrete server hostname.
+    let host = resolve_exit_to_host(&server, &state)?;
+
+    let cfg = state.config.lock().unwrap().clone();
+    let routes: Vec<String> = if cfg.split_tunnel && !cfg.split_domains.is_empty() {
+        resolve_split_routes(&cfg.split_domains)
+    } else {
+        vec!["0.0.0.0/0".to_string()]
+    };
+
+    let body = serde_json::json!({
+        "pin": VPN_PIN,
+        "server_host": host,
+        "username": cfg.username,
+        "password": cfg.password,
+        "routes": routes,
+        "dns": cfg.dns_servers,
+        "kill_switch": cfg.kill_switch,
+    });
+    daemon_post(&state.daemon_http, "/reconnect", &body).await
+}
+
+/// Resolve an exit_server value (a hostname, a "cc:xx"/"city:..." selector, or a
+/// bare 2-letter country code) into a concrete server hostname using the cached
+/// server list. A value that already looks like a hostname is returned as-is.
+fn resolve_exit_to_host(server: &str, state: &State<'_, AppState>) -> Result<String, String> {
+    let trimmed = server.trim();
+    if trimmed.is_empty() {
+        return Err("No exit server specified".into());
+    }
+    // A bare hostname (contains a dot, no selector prefix) is used directly.
+    if trimmed.contains('.') && !trimmed.contains(':') {
+        return Ok(trimmed.to_string());
+    }
+
+    let (mode, value) = match trimmed.split_once(':') {
+        Some(("cc", v)) => ("cc", v.trim()),
+        Some(("city", v)) => ("city", v.trim()),
+        Some((_, _)) => {
+            // An unknown "scheme:host" — but a hostname can legitimately carry a
+            // port. Treat the whole thing as a hostname.
+            return Ok(trimmed.to_string());
+        }
+        None => ("cc", trimmed),
+    };
+
+    let servers = state.servers.lock().unwrap();
+    let mut candidates: Vec<&ServerEntry> = match mode {
+        "cc" => servers.iter()
+            .filter(|s| s.country_code.eq_ignore_ascii_case(value))
+            .collect(),
+        _ => servers.iter()
+            .filter(|s| s.city.to_lowercase().contains(&value.to_lowercase()))
+            .collect(),
+    };
+    candidates.sort_by(|a, b| a.load.partial_cmp(&b.load).unwrap_or(std::cmp::Ordering::Equal));
+    candidates.first()
+        .map(|s| s.hostname.clone())
+        .ok_or_else(|| format!("No server found for exit '{server}'"))
 }
 
 #[tauri::command]
@@ -865,7 +1107,7 @@ async fn vpn_run_speed_test(state: State<'_, AppState>) -> Result<SpeedTestResul
         pings.push(t.elapsed().as_millis() as u32);
     }
     pings.sort();
-    let ping_ms = pings.get(1).copied().unwrap_or(pings[0]);
+    let ping_ms = pings.get(1).or_else(|| pings.first()).copied().unwrap_or(0);
 
     // Download test (10MB).
     let dl_start = Instant::now();
@@ -1123,6 +1365,12 @@ pub fn run() {
             vpn_status,
             vpn_get_config,
             vpn_save_config,
+            vpn_list_routing_rules,
+            vpn_add_routing_rule,
+            vpn_update_routing_rule,
+            vpn_delete_routing_rule,
+            vpn_reorder_routing_rules,
+            vpn_set_active_exit,
             vpn_get_history,
             vpn_clear_history,
             vpn_get_speed_results,
@@ -1147,9 +1395,6 @@ pub fn run() {
             commands::vpn_check_breach,
             commands::vpn_security_scan,
             commands::vpn_manage_subscription,
-            commands::vpn_add_split_process,
-            commands::vpn_remove_split_process,
-            commands::vpn_list_split_processes,
             commands::vpn_pause_connection,
             commands::vpn_send_notification,
             commands::vpn_report_error,

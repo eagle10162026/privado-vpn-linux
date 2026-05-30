@@ -259,9 +259,29 @@ fn refresh_token_via_login() -> Result<String, String> {
         };
 
         if let Some(tok) = data["access_token"].as_str() {
-            // Save the refreshed token.
-            let token_path = crate::config::config_dir().join("token.json");
-            let _ = std::fs::write(&token_path, &text);
+            // Persist the refreshed token in the CANONICAL SavedToken shape
+            // (access_token / refresh_token / expires_at) so the CLI's
+            // config::load_token and this module's read_saved_token both find
+            // the `expires_at` field. Writing the raw login response verbatim
+            // here previously left only `access_expire_epoch`, so subsequent
+            // reads treated the token as missing (load_token) or never-expiring
+            // (read_saved_token).
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let expires_at = data["access_expire_epoch"]
+                .as_u64()
+                .or_else(|| data["expires_in"].as_u64().map(|s| now + s))
+                .unwrap_or(now + 86400);
+            let saved = crate::config::SavedToken {
+                access_token: tok.to_string(),
+                refresh_token: data["refresh_token"].as_str().map(String::from),
+                expires_at,
+            };
+            if let Err(e) = crate::config::save_token(&saved) {
+                warn!("[portal-api] failed to persist refreshed token: {e}");
+            }
             return Ok(tok.to_string());
         }
     }
